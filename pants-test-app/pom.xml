@@ -1,0 +1,37 @@
+<!-- Copyright 2011 Square, Inc. -->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+  http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <properties>
+    <project.mainclass>com.squareup.pants.PantsTestApp</project.mainclass>
+    <deployableBranch>pants-test-app</deployableBranch>
+  </properties>
+
+  <parent>
+    <groupId>com.squareup</groupId>
+    <artifactId>app</artifactId>
+    <version>HEAD-SNAPSHOT</version> 
+
+    <!-- SQUARE Specific parent pom,  not provided.  Includes a dependencyManagement section -->
+    <relativePath>../../parents/base/pom.xml</relativePath>
+  </parent>
+
+  <groupId>com.squareup.pants</groupId>
+  <artifactId>pants-test-app</artifactId>
+  <version>HEAD-SNAPSHOT</version>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.google.inject</groupId>
+      <artifactId>guice</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>junit</groupId>
+      <artifactId>junit</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

@@ -1,0 +1,29 @@
+app: pants-test-app
+contact: core-services-robots
+git: {repo: 'https://stash.corp.squareup.com/scm/sq/java.git', prefix: pants-test-app}
+gns: {service_registry_enabled: true, client_enabled: true}
+jobs:
+- {name: example-task}
+jvm-flags:
+  default: ['-XX:+HeapDumpOnOutOfMemoryError', '-XX:HeapDumpPath=/data/app/pants-test-app/current/pants-test-app-heap-dump.hprof']
+log: {console: /var/service/pants-test-app/log/main/current, app: /var/log/pants-test-app/pants-test-app.log.active}
+ports:
+  22280: [http, status, external]
+  22299: [rpc, external]
+provides:
+  services:
+    ExampleService:
+      type: rpc
+      api: squareup.testing.ExampleService
+      methods: [SendData, PrintMessage, ThrowError, Wait]
+requires:
+  services:
+    ExampleService:
+      type: rpc
+      api: squareup.testing.ExampleService
+      methods: [SendData, PrintMessage, ThrowError, Wait]
+rollout_strategy: partial_stateless
+size: small
+status_checks:
+  standard:
+    global_vip_health: {enabled: false}
