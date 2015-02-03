@@ -7,4 +7,5 @@ Assumes that a single parents/base/pom.xml contains <dependencyManagement> defin
 regenerate_all.py: regenerates all the BUILD.gen and BUILD.aux files from pom.xml files
 check_pex_health.py: checks the fingerprint of the current pex against a previously cached one.
 
+zundel@squareup.com
 ericzundel@gmail.com
