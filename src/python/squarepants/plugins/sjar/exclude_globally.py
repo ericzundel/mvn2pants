@@ -3,17 +3,13 @@
 import logging
 
 
+from pants.backend.jvm.targets.exclude import Exclude
 from pants.backend.jvm.targets.jar_dependency import JarDependency
 from pants.base.config import Config
 
 _YAML_FILENAME = "pants.yaml"
 
 logger = logging.getLogger(__file__)
-
-class Exclude(object):
-  def __init__(self, org, name=None):
-    self.org = org
-    self.name = name
 
 
 def _load_excludes_from_config():
