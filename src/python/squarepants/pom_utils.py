@@ -22,6 +22,7 @@ class PomUtils(object):
   _LOCAL_DEP_TARGETS = None
   _THIRD_PARTY_DEP_TARGETS = []
   _TOP_POM_CONTENT_HANDLER = None
+  _EXTERNAL_PROTOS_POM_CONTENT_HANDLER = None
   _POM_PROVIDES_TARGET = None
 
   @staticmethod
@@ -55,6 +56,13 @@ class PomUtils(object):
       PomUtils._TOP_POM_CONTENT_HANDLER = TopPomContentHandler()
       xml.sax.parse("pom.xml", PomUtils._TOP_POM_CONTENT_HANDLER)
     return PomUtils._TOP_POM_CONTENT_HANDLER
+
+  @staticmethod
+  def external_protos_content_handler():
+    if not PomUtils._EXTERNAL_PROTOS_POM_CONTENT_HANDLER:
+      PomUtils._EXTERNAL_PROTOS_POM_CONTENT_HANDLER = TopPomContentHandler()
+      xml.sax.parse("parents/external-protos/pom.xml", PomUtils._EXTERNAL_PROTOS_POM_CONTENT_HANDLER)
+    return PomUtils._EXTERNAL_PROTOS_POM_CONTENT_HANDLER
 
   @staticmethod
   def get_modules():

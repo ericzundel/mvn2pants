@@ -12,9 +12,11 @@ from pom_utils import PomUtils
 from pom_to_BUILD import PomToBuild
 from generate_3rdparty import ThirdPartyBuildGenerator
 from generate_root_BUILD import RootBuildGenerator
+from generate_external_protos import ExternalProtosBuildGenerator
 
 logger = logging.getLogger(__name__)
 
+_MODULES_TO_SKIP = set(['parents/external-protos'])
 
 class Task(object):
   """Basically a souped-up lambda function which times itself running."""
@@ -60,11 +62,18 @@ class RegenerateAll(object):
       .format(root=self.baseroot))
 
   def _convert_poms(self):
-    poms = [x + '/pom.xml' for x in PomUtils.get_modules()]
-    logger.info('Re-generating {count} modules'.format(count=len(poms)))
+    modules = PomUtils.get_modules()
+    logger.info('Re-generating {count} modules'.format(count=len(modules)))
     # Convert pom files to BUILD files
-    for pom_file_name in poms:
-      PomToBuild().convertPom(pom_file_name, rootdir=self.baseroot)
+    for module_name in modules:
+      if not module_name in _MODULES_TO_SKIP:
+        pom_file_name = os.path.join(module_name, 'pom.xml')
+        PomToBuild().convertPom(pom_file_name, rootdir=self.baseroot)
+
+  def _regenerate_external_protos(self):
+    logger.info('Re-generating parents/external-protos/BUILD.gen')
+    with open('parents/external-protos/BUILD.gen', 'w') as build_file:
+      build_file.write(ExternalProtosBuildGenerator().generate())
 
   def _regenerate_3rdparty(self):
     logger.info('Re-generating 3rdparty/BUILD.gen')
@@ -79,6 +88,7 @@ class RegenerateAll(object):
   def execute(self):
     Task('clean_build_gen', self._clean_generated_builds)()
     Task('convert_poms', self._convert_poms)()
+    Task('regenerate_external_protos', self._regenerate_external_protos)()
     Task('regenerate_3rdparty', self._regenerate_3rdparty)()
     Task('regenerate_root', self._regenerate_root)()
 

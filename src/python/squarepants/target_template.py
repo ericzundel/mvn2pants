@@ -136,12 +136,16 @@ Target.jar_library = Target.create_template('jar_library', ['name', 'jars:list',
   jars = {jars},
 )''')
 
-Target.java_library = Target.create_template('java_library', ['name', 'sources', 'resources', 'dependencies',],
+Target.java_library = Target.create_template('java_library', ['name', 'sources', 'resources',
+                                                              'dependencies',
+                                                              'groupId', 'artifactId'],
 '''java_library(name={name},
-  # TODO: rglobs() is easy, but not ideal. sources between :test and :lib should not intersect, for example
   sources = {sources},
   resources = {resources},
   dependencies = {dependencies},
+  provides = artifact(org='{groupId}',
+                      name='{artifactId}',
+                      repo=square,),  # see squarepants/plugin/repo/register.py
 )''')
 
 Target.java_protobuf_library = Target.create_template('java_protobuf_library',
@@ -149,6 +153,13 @@ Target.java_protobuf_library = Target.create_template('java_protobuf_library',
 '''java_protobuf_library(name={name},
   sources = {sources},
   imports = {imports},
+  dependencies = {dependencies},
+)''')
+
+Target.java_wire_library = Target.create_template('java_wire_library',
+     ['name', 'sources', 'dependencies'],
+'''java_wire_library(name={name},
+  sources = {sources},
   dependencies = {dependencies},
 )''')
 
@@ -176,4 +187,10 @@ Target.resources = Target.create_template('resources',
   dependencies = {dependencies},
 )''')
 
+Target.unpacked_jars = Target.create_template('unpacked_jars',
+      ['name', 'libraries', 'include_patterns'],
+'''unpacked_jars(name={name},
+  libraries={libraries},
+  include_patterns={include_patterns},
+)''')
 

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 #
 # This module contains XML parsing handlers and other helper classes.
-# Many of these objects have factory constructors in PomUtils which 
+# Many of these objects have factory constructors in PomUtils which
 # will cache a singleton instance.
 #
 
@@ -30,40 +30,69 @@ class PomContentHandler(xml.sax.ContentHandler):
     # text content of the current node being parsed (can be retrieved in endElement)
     self.content = ""
     self.contentStack=[]
+
     self.properties = {}
+    self.artifactId = ""
+    self.groupId = ""
+    # dict containing elements defined in <project><parent> element
+    self.parent = {}
+
 
   def startElement(self, name, attrs):
-    """invoke this at the beginning of subclass call to startElement()"""
+    """invoke this at the beginning of subclass call to startElement()
+
+    :param string name: name of the current element.
+    :param list<string> attrs: xml attributes of the current element.
+    """
     self.contentStack.append(self.content)
     self.content = ""
     self.path.append(name)
 
   def characters(self, content):
+    """invoked with the element content as a string"""
     self.content += content.encode('ascii','ignore')
 
   def endElement(self, name):
-    """invoke this at the end of subclass call to endElement() """
-    # Parse properties of the form: <project><properties><foo>fooValue</foo></properties></project>
-    if self.pathStartsWith(["project", "properties"]):
-      self.properties[name] = self.content.strip()
+    """invoke this at the end of subclass call to endElement()
 
+    :param string name: name of the current element that is being closed.
+    """
+
+    if self.path == ["project", "groupId"]:
+      self.groupId = self.content.strip()
+    elif self.path == ["project", "artifactId"]:
+      self.artifactId = self.content.strip()
+
+    # Parse properties of the form: <project><properties><foo>fooValue</foo></properties></project>
+    elif self.pathStartsWith(["project", "properties"]):
+      self.properties[name] = self.content.strip()
+    if self.pathStartsWith(["project", "parent"]):
+      self.parent[name] = self.content.strip()
     self.path.pop(len(self.path) - 1)
     self.content = self.contentStack.pop()
 
   def endDocument(self):
+    """invoked at the end of the XML document. """
     xml.sax.ContentHandler.endDocument(self)
     PomContentHandler.invocations += 1
 
 
   def pathStartsWith(self, path_prefix):
+    """Convenience routine to see if the path to the current element matches the path passed.
+
+    :param list path_prefix: prefix to compare to the current path.
+    """
     if (len(self.path) >= len(path_prefix)) and self.path[0:len(path_prefix)] == path_prefix:
       return True
     return False
 
   def resolveProperties(self, str):
-    """substitute ${foo} with known property value of foo"""
+    """substitute ${foo} with known property value of foo
+
+    :param string str: string to search for property patterns in.
+    """
     while True:
-      match = re.search(r"(\$\{.*})", str)
+      match = re.search(r"(\$\{[^}]*})", str)
       if not match:
         break
       property_name = match.group(0)[2:-1]
@@ -71,6 +100,20 @@ class PomContentHandler(xml.sax.ContentHandler):
         break
       str = str[:match.start(0)] + self.properties[property_name] + str[match.end(0):]
     return str
+
+  def resolveDependencyProperties(self, raw_dependencies):
+    deps = []
+
+    # Resolve properties in the content
+    for raw_dependency in raw_dependencies:
+      dependency = {}
+      for tag in raw_dependency.keys():
+        if isinstance(raw_dependency[tag], basestring):
+          dependency[tag] = self.resolveProperties(raw_dependency[tag])
+        else:
+          dependency[tag] = raw_dependency[tag]
+      deps.append(dependency)
+    return deps
 
   def properties(self):
     """returns a hash of known property name, value pairs"""
@@ -103,33 +146,39 @@ class TopPomContentHandler(PomContentHandler):
 
 
 class _DMFPomContentHandler(PomContentHandler):
+  """Dependency Management Finder Content Handler
+
+  Used to parse <dependencyManagement> tags.
+  """
   def __init__(self):
     PomContentHandler.__init__(self)
-    # Array containing hash of { groupId => "", artifactId => "", version => "" }
+    # Array containing hash of { groupId => "", artifactId => "", version => "" exclusions => [exclusions]}
     self.dependency_management = []
-    self.dependency = {}
-    self.dependency_excludes = []
-    self.dependency_exclude = {}
+
+    # Temporary storage for data parsed from sub-elements
+    self._dependency = {}
+    self._dependency_excludes = []
+    self._dependency_exclude = {}
 
   def endElement(self, name):
     if self.pathStartsWith(["project", "dependencyManagement", "dependencies", "dependency", "exclusions", "exclusion"]):
       if len(self.path) == 7:
-        self.dependency_exclude[self.path[-1]] = self.content.strip()
+        self._dependency_exclude[self.path[-1]] = self.content.strip()
       elif (len(self.path) == 6):
-        self.dependency_excludes.append(self.dependency_exclude)
-        self.dependency_exclude = {}
+        self._dependency_excludes.append(self._dependency_exclude)
+        self._dependency_exclude = {}
     elif self.pathStartsWith(["project", "dependencyManagement", "dependencies", "dependency"]):
       # Parse 'dependencies' under the 'dependencyManagement' tag
       if len(self.path) == 5:
-        self.dependency[self.path[-1]] = self.content.strip()
+        self._dependency[self.path[-1]] = self.content.strip()
       elif len(self.path) == 4:
         # end of <dependency> definition. Save it.
 
         # override the 'exclusions' field with the array we built up
-        self.dependency['exclusions'] = self.dependency_excludes
-        self.dependency_excludes = []
-        self.dependency_management.append(self.dependency)
-        self.dependency = {}
+        self._dependency['exclusions'] = self._dependency_excludes
+        self._dependency_excludes = []
+        self.dependency_management.append(self._dependency)
+        self._dependency = {}
 
     PomContentHandler.endElement(self, name)
 
@@ -138,31 +187,29 @@ class _DMFPomContentHandler(PomContentHandler):
 
 
 class _DFPomContentHandler(PomContentHandler):
+  """Dependency Finder Content Handler
+
+  Used to parse <dependency> tags.
+  """
+
   def __init__(self):
     PomContentHandler.__init__(self)
     # Array containing hash of { groupId => "", artifactId => "", version => "" }
     self.dependencies = []
     self.dependency = {}
-    self.artifactId = ""
-    self.groupId = ""
     self.dependency_excludes = []
     self.dependency_exclude = {}
 
 
   def endElement(self, name):
+
+    # Add the parent pom as one of the dependencies
     if self.pathStartsWith(["project", "parent"]):
       if len(self.path) == 3:
         self.dependency[self.path[-1]] = self.content.strip()
       if len(self.path) == 2:
         self.dependencies.append(self.dependency)
         self.dependency = {}
-
-    if self.path == ["project", "groupId"]:
-      self.groupId = self.content.strip()
-      logger.debug("FOUND GROUPID: " + self.groupId)
-    elif self.path == ["project", "artifactId"]:
-      self.artifactId = self.content.strip()
-      logger.debug("FOUND ARTIFACTID: " + self.artifactId)
 
     if self.pathStartsWith(["project", "dependencies", "dependency", "exclusions", "exclusion"]):
       if len(self.path) == 6:
@@ -212,22 +259,8 @@ class DependencyFinder():
     self.artifactId = pomHandler.artifactId
     self.groupId = pomHandler.groupId
     self.properties = pomHandler.properties
-    deps = []
 
-    for key in self.properties.keys():
-      logger.debug("property " + key + " = " + self.properties[key])
-
-    # Resolve properties in the content
-    for raw_dependency in pomHandler.dependencies:
-      logger.debug("dep: %s" % (raw_dependency['artifactId']))
-      dependency = {}
-      for tag in raw_dependency.keys():
-        if isinstance(raw_dependency[tag], basestring):
-          dependency[tag] = pomHandler.resolveProperties(raw_dependency[tag])
-        else:
-          dependency[tag] = raw_dependency[tag]
-      deps.append(dependency)
-    return deps
+    return pomHandler.resolveDependencyProperties(pomHandler.dependencies)
 
 
 class DependencyManagementFinder():
@@ -254,23 +287,9 @@ class DependencyManagementFinder():
     with open(source_file_name) as source:
       xml.sax.parse(source, pomHandler)
     source.close()
-    properties = pomHandler.properties
-    deps = []
 
-    for key in properties.keys():
-      logger.debug("property " + key + " = " + properties[key])
+    return pomHandler.resolveDependencyProperties(pomHandler.dependency_management)
 
-    # resolve properties in the content
-    for raw_dependency in pomHandler.dependency_management:
-      dependency = {}
-      for tag in raw_dependency.keys():
-        if isinstance(raw_dependency[tag], basestring):
-          dependency[tag] = pomHandler.resolveProperties(raw_dependency[tag])
-        else:
-          dependency[tag] = raw_dependency[tag]
-      deps.append(dependency)
-    DependencyManagementFinder._cache[source_file_name] = deps
-    return deps
 
 
 class PomProvidesTarget():
@@ -325,10 +344,12 @@ class PomProvidesTarget():
 class DepsFromPom():
   """ Given a module's pom.xml file, pull out the list of dependencies formatted for using a pants BUILD file"""
 
-  def __init__(self, pom_provides_target, rootdir=None):
+  def __init__(self, pom_provides_target, rootdir=None, exclude_project_targets=None):
     """:param string rootdir: root directory of the repo to analyze"""
+    self.exclude_project_targets = exclude_project_targets or []
     self.target = ""
     self.artifact_id = ""
+    self.group_id = ""
     self.properties = {}
     self._source_file_name = ""
     self._rootdir=rootdir
@@ -341,8 +362,10 @@ class DepsFromPom():
     df = DependencyFinder(rootdir=self._rootdir)
     deps = sorted(df.find_dependencies(source_file_name))
     self.target = "%s.%s" % (df.groupId, df.artifactId)
+    self.group_id = df.groupId
     self.artifact_id = df.artifactId
     self.properties = df.properties
+
     self._source_file_name = source_file_name
     lib_deps, test_deps = [], []
     for dep in deps:
@@ -355,22 +378,22 @@ class DepsFromPom():
     test_pants_refs = self.build_pants_refs(test_deps)
     return lib_pants_refs, test_pants_refs
 
-  def get_closest_match(self, project_root, target_suffix):
+  def get_closest_match(self, project_root, target_prefix):
     """Looks for a target close to the one specified in the list of known targets.  If one maven
     project depends on another, there is usually a .../java:lib target, but not always.  This
     method substitutes in a .../proto:proto target if a .../java:lib does not exist.
     :param project_root: the project directory where the pom.xml for the project is found
-    :param target_suffix: suffix of the garget we're looking for
-    :return: a target close to the target_suffix specified.
+    :param target_prefix: prefix of the target we're looking for.
+    :return: a target that matches the highest precedent target for that project.
     """
     # When targets is empty, we assume we could not build the list and thus just don't do anything.
-    target = os.path.join(project_root, target_suffix)
+    target_prefix = os.path.join(project_root, target_prefix)
     targets = LocalTargets.get(project_root)
-    if target in targets:
-      return target
-    # If there is no src/main/java, see if there is a proto target we can substitute instead
-    if target.endswith('java:lib'):
-      tmp = target[:-8] + 'proto:proto'
+
+    # order is important in the list below. if java:lib exists, it will depend on the others.
+    # proto:proto and wire_proto:wire_proto will depend on resources if they exist.
+    for suffix in ['java:lib', 'proto:proto', 'wire_proto:wire_proto', 'resources:resources']:
+      tmp = target_prefix + suffix
       if tmp in targets:
         return tmp
     return None
@@ -387,16 +410,15 @@ class DepsFromPom():
           project_root = os.path.dirname(poms[0])
         else:
           project_root = dep['artifactId']
-        if re.search("proto(s){0,1}$", project_root) or re.search('/proto(s){0,1}/', project_root):
-          target_name = "src/main/proto:proto"
+        if project_root in self.exclude_project_targets:
+          continue
+        if dep.has_key('type') and dep['type'] == 'test-jar':
+          target_prefix = 'src/test/'
         else:
-          if dep.has_key('type') and dep['type'] == 'test-jar':
-            target_name = 'src/test/java:lib'
-          else:
-            target_name = "src/main/java:lib"
-        target_name = self.get_closest_match(project_root, target_name)
+          target_prefix = "src/main/"
+        target_name = self.get_closest_match(project_root, target_prefix)
         if target_name:
-          pants_refs.append("'%s'" % target_name)
+          pants_refs.append("'{0}'".format(target_name))
 
     # Print 3rdparty dependencies after the local deps
     for dep in deps:
@@ -418,7 +440,7 @@ class DepsFromPom():
           for jar_exclude in dep['exclusions']:
             jar_excludes += ".exclude(org='%s', name='%s')" % (jar_exclude['groupId'], jar_exclude['artifactId'])
 
-        pants_refs.append("""jar(org='%s', name='%s', rev='%s',%s).with_sources()%s"""
+        pants_refs.append("""jar(org='%s', name='%s', rev='%s',%s)%s"""
                           % (dep['groupId'], dep['artifactId'], dep['version'], url_attribute, jar_excludes))
 
     return pants_refs
