@@ -20,9 +20,9 @@ import sys
 import time
 
 from pom_utils import PomUtils
-from pom_to_BUILD import PomToBuild
+from pom_to_build import PomToBuild
 from generate_3rdparty import ThirdPartyBuildGenerator
-from generate_root_BUILD import RootBuildGenerator
+from generate_root_build import RootBuildGenerator
 
 
 def _get_dependency_patterns():
@@ -552,7 +552,7 @@ class CheckPoms(object):
     poms = [x + '/pom.xml' for x in PomUtils.get_modules()]
     # Convert pom files to BUILD files
     for pom_file_name in poms:
-      PomToBuild().convertPom(pom_file_name, rootdir=self.baseroot)
+      PomToBuild().convert_pom(pom_file_name, rootdir=self.baseroot)
 
     logger.info('Re-generating 3rdparty/BUILD.gen')
     with open('3rdparty/BUILD.gen', 'w') as build_file:

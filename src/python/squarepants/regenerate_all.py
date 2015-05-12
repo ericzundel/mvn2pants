@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.7
 #
 # Unconditionally recreates the generated BUILD.gen and BUILD.aux files
 #
@@ -9,9 +9,9 @@ import sys
 import time
 
 from pom_utils import PomUtils
-from pom_to_BUILD import PomToBuild
+from pom_to_build import PomToBuild
 from generate_3rdparty import ThirdPartyBuildGenerator
-from generate_root_BUILD import RootBuildGenerator
+from generate_root_build import RootBuildGenerator
 from generate_external_protos import ExternalProtosBuildGenerator
 
 logger = logging.getLogger(__name__)
@@ -39,12 +39,13 @@ class Task(object):
     return self._time_taken
 
   def __call__(self):
-    logger.debug('Starting %s.' % self.name)
+    logger.debug('Starting {0}.'.format(self.name))
     start = time.time()
     value = self.run()
     end = time.time()
     self._time_taken = end - start
-    logger.debug('Done with %s (took %0.03f seconds).' % (self.name, self.duration))
+    logger.debug('Done with {name} (took {duration:0.03f} seconds).'.format(name=self.name,
+                                                                            duration=self.duration))
     return value
 
 
@@ -55,7 +56,7 @@ class RegenerateAll(object):
 
   def _clean_generated_builds(self):
     """Removes all generated BUILD files from the source diretory"""
-    logger.info('Removing old generated BUILD.gen and BUILD.aux files')
+    logger.debug('Removing old generated BUILD.gen and BUILD.aux files')
     os.system(
       "find {root} \( -path '*/.pants.d/*' -prune -path '*/target/*' -prune \) "
       " -o \( -name BUILD.gen -o -name BUILD.aux \) | xargs rm -f"
@@ -63,25 +64,25 @@ class RegenerateAll(object):
 
   def _convert_poms(self):
     modules = PomUtils.get_modules()
-    logger.info('Re-generating {count} modules'.format(count=len(modules)))
+    logger.debug('Re-generating {count} modules'.format(count=len(modules)))
     # Convert pom files to BUILD files
     for module_name in modules:
       if not module_name in _MODULES_TO_SKIP:
         pom_file_name = os.path.join(module_name, 'pom.xml')
-        PomToBuild().convertPom(pom_file_name, rootdir=self.baseroot)
+        PomToBuild().convert_pom(pom_file_name, rootdir=self.baseroot)
 
   def _regenerate_external_protos(self):
-    logger.info('Re-generating parents/external-protos/BUILD.gen')
+    logger.debug('Re-generating parents/external-protos/BUILD.gen')
     with open('parents/external-protos/BUILD.gen', 'w') as build_file:
       build_file.write(ExternalProtosBuildGenerator().generate())
 
   def _regenerate_3rdparty(self):
-    logger.info('Re-generating 3rdparty/BUILD.gen')
+    logger.debug('Re-generating 3rdparty/BUILD.gen')
     with open('3rdparty/BUILD.gen', 'w') as build_file:
       build_file.write(ThirdPartyBuildGenerator().generate())
 
   def _regenerate_root(self):
-    logger.info('Re-generating BUILD.gen')
+    logger.debug('Re-generating BUILD.gen')
     with open('BUILD.gen', 'w') as build_file:
       build_file.write(RootBuildGenerator().generate())
 
@@ -93,7 +94,7 @@ class RegenerateAll(object):
     Task('regenerate_root', self._regenerate_root)()
 
 def usage():
-  print "usage: %s [args] " % sys.argv[0]
+  print "usage: {0} [args] ".format(sys.argv[0])
   print "Regenerates the BUILD.* files for the repo"
   print ""
   print "-?,-h         Show this message"
@@ -115,12 +116,13 @@ def main():
       usage()
       return
     else:
-      print ("Unknown flag %s" % f)
+      print ("Unknown flag {0}".format(f))
       usage()
       return
   main_run = Task('main', lambda: RegenerateAll(path, flags).execute())
   main_run()
-  logger.info('Finish checking BUILD.* health in %0.3f seconds.' % main_run.duration)
+  logger.info('Regenerated BUILD files in {duration:0.3f} seconds.'
+              .format(duration=main_run.duration))
 
 
 if __name__ == '__main__':

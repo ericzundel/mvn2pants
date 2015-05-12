@@ -46,11 +46,6 @@ class ThirdPartyBuildGenerator(object):
         name = artifact
         if force_attribute:
           name += "-{0}".format(dep['version'])
-
-        #if name in _loaded_names:
-        #  name = artifact
-        #  # Ugh, some of our dependencies have the same unqualified artifactId. Renaming the second one
-        #  print "Duplicate artifactId: %s. Renaming to %s as a workaround." % (dep['artifactId'], artifact)
         jar_excludes = ""
         if dep.has_key('exclusions'):
           for jar_exclude in dep['exclusions']:

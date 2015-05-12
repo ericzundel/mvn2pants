@@ -13,6 +13,43 @@ import xml.sax
 
 logger = logging.getLogger(__name__)
 
+def reset_caches():
+  LocalTargets.reset()
+  CachedDependencyInfos.reset()
+  DependencyManagementFinder.reset()
+  PomProvidesTarget.reset()
+
+def resolve_properties(value, properties):
+  """substitute ${foo} with known property properties['foo']
+
+  :param string value: string to search for property patterns in.
+  :param dict properties: properties values extracted from hierarchy of pom files.
+  """
+  while True:
+    match = re.search(r"(\$\{[^}]*})", value)
+    if not match:
+      break
+    property_name = match.group(0)[2:-1]
+    if not properties.has_key(property_name):
+      break
+    value = "{prefix}{subst_value}{suffix}".format(
+            prefix=value[:match.start(0)],
+            subst_value=properties[property_name],
+            suffix=value[match.end(0):])
+  return value
+
+def resolve_dependency_properties(dependencies_list, properties):
+  """Substitute property references in dependencies_list.
+
+  :param dependencies_list: list of values extracted from <dependencies>
+  :type dependencies_list: list of dict
+  :param dict properties: properties values extracted from hierarchy of pom files.
+  """
+  for dep in dependencies_list:
+    for key, value in dep.iteritems():
+      if isinstance(value, basestring):
+        dep[key] = resolve_properties(value, properties)
+  return dependencies_list
 
 class PomContentHandler(xml.sax.ContentHandler):
   """Base class for a simple sax parser to read a maven pom.xml file
@@ -85,35 +122,6 @@ class PomContentHandler(xml.sax.ContentHandler):
     if (len(self.path) >= len(path_prefix)) and self.path[0:len(path_prefix)] == path_prefix:
       return True
     return False
-
-  def resolveProperties(self, str):
-    """substitute ${foo} with known property value of foo
-
-    :param string str: string to search for property patterns in.
-    """
-    while True:
-      match = re.search(r"(\$\{[^}]*})", str)
-      if not match:
-        break
-      property_name = match.group(0)[2:-1]
-      if not self.properties.has_key(property_name):
-        break
-      str = str[:match.start(0)] + self.properties[property_name] + str[match.end(0):]
-    return str
-
-  def resolveDependencyProperties(self, raw_dependencies):
-    deps = []
-
-    # Resolve properties in the content
-    for raw_dependency in raw_dependencies:
-      dependency = {}
-      for tag in raw_dependency.keys():
-        if isinstance(raw_dependency[tag], basestring):
-          dependency[tag] = self.resolveProperties(raw_dependency[tag])
-        else:
-          dependency[tag] = raw_dependency[tag]
-      deps.append(dependency)
-    return deps
 
   def properties(self):
     """returns a hash of known property name, value pairs"""
@@ -202,7 +210,6 @@ class _DFPomContentHandler(PomContentHandler):
 
 
   def endElement(self, name):
-
     # Add the parent pom as one of the dependencies
     if self.pathStartsWith(["project", "parent"]):
       if len(self.path) == 3:
@@ -233,34 +240,104 @@ class _DFPomContentHandler(PomContentHandler):
     PomContentHandler.endElement(self, name)
 
 
-class DependencyFinder():
+class DependencyInfo():
   """Process a module pom.xml file looking for dependencies."""
 
-  def __init__(self, rootdir=None):
-    self.artifactId = ""
-    self.groupId = ""
-    self.properties = {}
-    self._rootdir = rootdir
+  def __init__(self, source_file_name, rootdir=None):
+    self._artifactId = None
+    self._groupId = None
+    self._properties = {}
+    self._dependencies = []
+    self._parse(source_file_name, rootdir)
 
-  def find_dependencies(self, source_file_name):
-    """Process a pom.xml file
-    :return: an array of dictionaries with contents of <project><dependencies><dependency> tags
-    """
+  def _parse(self, source_file_name, rootdir):
     pomHandler = _DFPomContentHandler()
+    if rootdir:
+      full_source_path = os.path.join(rootdir, source_file_name)
+    else:
+      full_source_path = source_file_name
+
     try:
-      if self._rootdir:
-        source_file_name = os.path.join(self._rootdir, source_file_name)
-      with open(source_file_name) as source:
+      with open(full_source_path) as source:
         xml.sax.parse(source, pomHandler)
     except IOError:
       # assume this file has been removed for a good reason and just continue normally
-      return []
+      return
 
-    self.artifactId = pomHandler.artifactId
-    self.groupId = pomHandler.groupId
-    self.properties = pomHandler.properties
+    self._artifactId = pomHandler.artifactId
+    self._groupId = pomHandler.groupId
 
-    return pomHandler.resolveDependencyProperties(pomHandler.dependencies)
+    # Since dependencies are just dicts, we keep track of keys separately.  Maybe in the future
+    # it would be good to create a Dependency data structure and return a set or ordered dictionary
+    # of those instances instead.
+    dep_keys = set()
+    for dep in pomHandler.dependencies:
+      if 'groupId' in dep and 'artifactId' in dep:
+        dep_keys.add('{0} {1}'.format(dep['groupId'], dep['artifactId']))
+        self._dependencies.append(dep)
+
+    if 'groupId' in pomHandler.parent \
+        and 'artifactId' in pomHandler.parent \
+        and 'relativePath' in pomHandler.parent:
+      parent_path = os.path.normpath(os.path.join(os.path.dirname(source_file_name),
+                                                  pomHandler.parent['relativePath']))
+      parent_df = CachedDependencyInfos().get(parent_path, rootdir=rootdir)
+      for dep in parent_df.dependencies:
+        key = '{0} {1}'.format(dep['groupId'], dep['artifactId'])
+        # dependencies declared in parent poms can be overridden
+        if key not in dep_keys:
+          self._dependencies.append(dep)
+      self._properties.update(parent_df.properties)
+
+    self._properties.update(pomHandler.properties)
+
+    resolve_dependency_properties(self._dependencies, pomHandler.properties)
+
+    # Fixup property references
+    for key, value in self._properties.items():
+      self._properties[key] = resolve_properties(value, self._properties)
+
+  @property
+  def artifactId(self):
+    """The contents of the <artifactId> tag for the project in the pom.xml file."""
+    return self._artifactId
+
+  @property
+  def groupId(self):
+    """The contents of the <groupId> tag for the project in the pom.xml file."""
+    return self._groupId
+
+  @property
+  def properties(self):
+    """A dictionary of the contents of the <properties> tag from the pom.xml file."""
+    return self._properties
+
+  @property
+  def dependencies(self):
+    """An array of dictionaries with contents of <project><dependencies><dependency> tags."""
+    return self._dependencies
+
+
+class CachedDependencyInfos(object):
+  """Keeps cached instances of DependencyInfos so we only have to process them once."""
+  cached_dfs = {}
+
+  @classmethod
+  def reset(cls):
+    """Reset cache for unit testing."""
+    CachedDependencyInfos.cached_dfs = {}
+
+  @classmethod
+  def get(cls, source_file_name, rootdir=None):
+    """Returns a cached instance of DependencyInfo or creates a new one if needed."""
+    if rootdir:
+      key = os.path.join(rootdir, source_file_name)
+    else:
+      key = source_file_name
+
+    if key not in cls.cached_dfs:
+      cls.cached_dfs[key] = DependencyInfo(source_file_name, rootdir=rootdir)
+    return cls.cached_dfs[key]
 
 
 class DependencyManagementFinder():
@@ -273,6 +350,10 @@ class DependencyManagementFinder():
   def __init__(self, rootdir=None):
     """:param string rootdir: root directory of the repo to analyze"""
     self._rootdir = rootdir
+
+  @classmethod
+  def reset(cls):
+    cls._cache = {}
 
   def find_dependencies(self, source_file_name):
     """Process a pom.xml file containing the <dependencyManagement> tag.
@@ -288,7 +369,7 @@ class DependencyManagementFinder():
       xml.sax.parse(source, pomHandler)
     source.close()
 
-    return pomHandler.resolveDependencyProperties(pomHandler.dependency_management)
+    return resolve_dependency_properties(pomHandler.dependency_management, pomHandler.properties)
 
 
 
@@ -305,6 +386,11 @@ class PomProvidesTarget():
     if not PomProvidesTarget.artifacts_in_modules:
       self.init_artifacts_in_modules()
 
+  @classmethod
+  def reset(cls):
+    cls.artifacts_in_modules = {}
+    cls.targets_in_modules = {}
+
   def add_to_dict(self, dictionary, key, value):
     if not dictionary.has_key(key):
       dictionary[key] = []
@@ -314,12 +400,13 @@ class PomProvidesTarget():
     modules = self._top_pom_content_handler.modules
     logger.debug("modules are {modules}".format(modules=modules))
     for module in modules:
-      finder = DependencyFinder()
       pom = module + "/pom.xml"
-      finder.find_dependencies(pom)
+      finder = CachedDependencyInfos.get(pom)
       self.add_to_dict(PomProvidesTarget.artifacts_in_modules, finder.artifactId, pom)
       self.add_to_dict(PomProvidesTarget.targets_in_modules,
-                       "%s.%s" % (finder.groupId, finder.artifactId), pom)
+                       "{groupId}.{artifactId}".format(groupId=finder.groupId,
+                                                       artifactId=finder.artifactId),
+                       pom)
 
   def find_artifact(self, query):
     poms = []
@@ -359,9 +446,9 @@ class DepsFromPom():
     """:param source_file_name: relative path of pom.xml file to analyze
     :return: tuple of (list of library deps, list of test refs)
     """
-    df = DependencyFinder(rootdir=self._rootdir)
-    deps = sorted(df.find_dependencies(source_file_name))
-    self.target = "%s.%s" % (df.groupId, df.artifactId)
+    df = CachedDependencyInfos.get(source_file_name, rootdir=self._rootdir)
+    deps = sorted(df.dependencies)
+    self.target = "{groupId}.{artifactId}".format(groupId=df.groupId, artifactId=df.artifactId)
     self.group_id = df.groupId
     self.artifact_id = df.artifactId
     self.properties = df.properties
@@ -402,7 +489,8 @@ class DepsFromPom():
     from pom_utils import PomUtils
     pants_refs = []
     for dep in deps:
-      dep_target = "%s.%s" % (dep['groupId'], dep['artifactId'])
+      dep_target = "{groupId}.{artifactId}".format(groupId=dep['groupId'],
+                                                   artifactId=dep['artifactId'])
       if PomUtils.is_local_dep(dep_target):
         # find the POM that contains this artifact
         poms = self._pom_provides_target.find_target(dep_target)
@@ -422,27 +510,39 @@ class DepsFromPom():
 
     # Print 3rdparty dependencies after the local deps
     for dep in deps:
-      dep_target = "%s.%s" % (dep['groupId'], dep['artifactId'])
+      dep_target = "{groupId}.{artifactId}".format(groupId=dep['groupId'],
+                                                   artifactId=dep['artifactId'])
       if PomUtils.is_third_party_dep(dep_target):
-        logger.debug("dep_target %s is not local" % dep_target)
-        pants_refs.append("'3rdparty:%s'" % (dep_target))
+        logger.debug("dep_target {target} is not local".format(target=dep_target))
+        pants_refs.append("'3rdparty:{target}'".format(target=dep_target))
 
     # Print the external deps last
     for dep in deps:
-      dep_target = "%s.%s" % (dep['groupId'], dep['artifactId'])
+      dep_target = "{groupId}.{artifactId}".format(groupId=dep['groupId'],
+                                                   artifactId=dep['artifactId'])
       if PomUtils.is_external_dep(dep_target):
         if not dep.has_key('version'):
-          raise Exception("Expected artifact %s group %s in pom %s to have a version."
-                          % (dep['artifactId'], dep['groupId'], self._source_file_name))
-        url_attribute = "url='https://nexus.corp.squareup.com/content/groups/public/'"
+          raise Exception(
+            "Expected artifact {artifactId} group {groupId} in pom {pom_file} to have a version."
+            .format(artifactId=dep['artifactId'],
+                    groupId=dep['groupId'],
+                    pom_file=self._source_file_name))
         jar_excludes = ""
         if dep.has_key('exclusions'):
           for jar_exclude in dep['exclusions']:
-            jar_excludes += ".exclude(org='%s', name='%s')" % (jar_exclude['groupId'], jar_exclude['artifactId'])
+            jar_excludes += ".exclude(org='{groupId}', name='{artifactId}')".format(
+              groupId=jar_exclude['groupId'], artifactId=jar_exclude['artifactId'])
 
-        pants_refs.append("""jar(org='%s', name='%s', rev='%s',%s)%s"""
-                          % (dep['groupId'], dep['artifactId'], dep['version'], url_attribute, jar_excludes))
-
+        if 'classifier' in dep:
+          classifier = ", classifier='{classifier}'".format(classifier=dep['classifier'])
+        else:
+          classifier = ''
+        pants_refs.append("jar(org='{groupId}', name='{artifactId}', rev='{version}'{classifier}){jar_excludes}"
+                          .format(groupId=dep['groupId'],
+                                  artifactId=dep['artifactId'],
+                                  version=dep['version'],
+                                  classifier=classifier,
+                                  jar_excludes=jar_excludes))
     return pants_refs
 
   def get_property(self, name):
@@ -456,29 +556,46 @@ class LocalTargets:
     local dependencies.  Results are cached.
   """
   _cache = {}
+  _types = {
+    'src/main/java': ['lib'],
+    'src/main/proto': ['proto'],
+    'src/main/resources': ['resources'],
+    'src/test/java': ['lib','test'],
+    'src/test/proto' : ['proto'],
+    'src/test/resources' : ['resources'],
+    'src/main/wire_proto': ['wire_proto'],
+    }
 
-  @staticmethod
-  def get(project_root):
+  @classmethod
+  def reset(cls):
+    cls._cache = {}
+
+  @classmethod
+  def get(cls, project_root):
     """:param project_root: path to the root of the project where the pom.xml is located
     :return: a set of all targets based on the presence of directories."""
-    types = {
-      'src/main/java': ['lib'],
-      'src/main/proto': ['proto'],
-      'src/main/resources': ['resources'],
-      'src/test/java': ['lib','test'],
-      'src/test/proto' : ['proto'],
-      'src/test/resources' : ['resources'],
-      'src/main/wire_proto': ['wire_proto'],
-      }
-    if LocalTargets._cache.has_key(project_root):
-      return LocalTargets._cache[project_root]
+
+    if cls._cache.has_key(project_root):
+      return cls._cache[project_root]
+
+    def is_candidate_dir(source_dir):
+      if not os.path.isdir(source_dir):
+        return False
+      files = os.listdir(source_dir)
+      if files:
+        return True
+      return False
 
     result = set();
-    result.add("%s:lib" % project_root)
-    for path in types.keys():
-      if os.path.isdir(os.path.join(project_root, path)):
-        for target in types[path]:
-          result.add("%s:%s" % (os.path.join(project_root, path), target))
-    LocalTargets._cache[project_root] = result
+    result.add("{project_root}:lib".format(project_root=project_root))
+    for path in cls._types.keys():
+      if is_candidate_dir(os.path.join(project_root, path)):
+        for target in cls._types[path]:
+          result.add("{path}:{target}".format(path=os.path.join(project_root, path), target=target))
+    # HACK for external protos - the src/main/proto directory may not exist yet and will likely
+    # be empty
+    if project_root.startswith("external-protos"):
+      result.add("{project_root}/src/main/proto:proto".format(project_root=project_root))
+    cls._cache[project_root] = result
     return result
 

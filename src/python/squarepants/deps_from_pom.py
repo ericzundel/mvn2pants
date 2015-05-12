@@ -21,7 +21,7 @@ def main(sourceFileName):
   pants_refs =  DepsFromPom(PomUtils.pom_provides_target()).get(sourceFileName)
   elapsed_ms = int(round(time.time() * 1000)) - start_ms
   for pants_ref in pants_refs:
-    print("      %s" % (pants_ref))
+    print("      {ref}".format(ref=pants_ref))
   print
   print("Parsed %d pom.xml files in %dms." % (PomContentHandler.num_invocations(), elapsed_ms))
 

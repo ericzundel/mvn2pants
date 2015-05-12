@@ -66,7 +66,7 @@ class Target(object):
           return "''"
         if re.match(r'^\s*(["{quote}]).*?[^\\]\1\s*$'.format(quote="'"), re_value):
           return value
-        return "'%s'" % value
+        return "'{0}'".format(value)
       if kind == 'list':
         if not value:
           return '[]'
@@ -74,8 +74,8 @@ class Target(object):
           if '(' in value:
             return value # Hack for globs()
           value = [value,]
-        return '[\n    %s\n  ]' % ',\n    '.join('%s' % s for s in value)
-      raise NoSuchValueType('No such value type "{kind}".'.format(kind=kind))
+        return '[\n    {list_value}\n  ]'.format(list_value=',\n    '.join(s for s in value))
+      raise self.NoSuchValueType('No such value type "{kind}".'.format(kind=kind))
 
     def format(self, **kwargs):
       """Behaves somewhat like str.format, creating a 'concrete' by injecting relevant parameters
@@ -102,7 +102,7 @@ class Target(object):
       relevant = {}
       for param in self.params.keys():
         relevant[param] = self._extract(param, kwargs)
-      return '\n%s\n' % self.template.format(**relevant)
+      return '\n{0}\n'.format(self.template.format(**relevant))
 
   _ALL_TEMPLATES = {}
   @classmethod
@@ -116,6 +116,14 @@ class Target(object):
     if name in cls._ALL_TEMPLATES:
       return cls._ALL_TEMPLATES[name]
     raise Target.NoSuchTargetError(name)
+
+  @classmethod
+  def reset(cls):
+    """Clear out existing templates.
+
+    Intended for testing.
+    """
+    cls._ALL_TEMPLATES = {}
 
 
 Target.annotation_processor = Target.create_template('annotation_processor',
@@ -178,6 +186,7 @@ Target.jvm_binary = Target.create_template('jvm_binary',
   basename= {basename},
   #source = 'src/main/java/{main_source}.java',
   dependencies = {dependencies},
+  manifest_entries = square_manifest(),
 )''')
 
 Target.resources = Target.create_template('resources',

@@ -12,7 +12,7 @@ import os.path
 import sys
 
 from pom_utils import PomUtils
-from pom_handlers import DependencyFinder
+from pom_handlers import CachedDependencyInfos
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,8 @@ def build_dependency_graph():
   dependency_edges = {}
   for module in PomUtils.top_pom_content_handler().modules:
     logger.debug("found module: " + module)
-    finder = DependencyFinder()
-    deps = finder.find_dependencies(module + "/pom.xml")
+    finder = CachedDependencyInfos.get(module + "/pom.xml")
+    deps = finder.dependencies
     target = "{group_id}.{artifact_id}".format(group_id=finder.groupId,
                                                artifact_id=finder.artifactId)
     logger.debug("Adding dependencies for {target}".format(target=target))
@@ -54,8 +54,7 @@ def main(sourceFile):
      of the module defined in sourceFile and prints them out as <groupId>.<artifactId>
   """
   # Fetch the group/artifact for the source file
-  finder = DependencyFinder()
-  finder.find_dependencies(sourceFile)
+  finder = DependencyInfo(sourceFile)
   query =  "{group_id}.{artifact_id}".format(group_id=finder.groupId,
                                              artifact_id=finder.artifactId)
   logger.debug("Looking for all dependencies of: {query}".format(query=query))
