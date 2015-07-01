@@ -10,6 +10,7 @@ import unittest2 as unittest
 import xml.sax
 
 import squarepants.pom_handlers
+from squarepants.pom_utils import PomUtils
 from squarepants_test.test_utils import temporary_dir
 
 
@@ -230,23 +231,6 @@ class PomHandlerTest(unittest.TestCase):
     self.assertEquals('FOO', handler.properties['prop.foo'])
     self.assertEquals('BAR', handler.properties['prop.bar'])
     self.assertEquals('${prop.foo}-BAZ', handler.properties['prop.baz'])
-
-  def test_resolve_properties(self):
-    handler =  squarepants.pom_handlers.PomContentHandler()
-    xml.sax.parseString(ROOT_POM, handler)
-    properties = handler.properties
-    squarepants.pom_handlers.resolve_properties('${prop.foo}', properties)
-    self.assertEquals('FOOBAR',
-                      squarepants.pom_handlers.resolve_properties('${prop.foo}${prop.bar}',
-                                                                  properties))
-    self.assertEquals('FOO-BAZ', squarepants.pom_handlers.resolve_properties('${prop.baz}',
-                                                                             properties))
-    deps = squarepants.pom_handlers.resolve_dependency_properties([{'key1' : 'key1-${prop.foo}'},
-                                                                   {'key2' : 'key2-${prop.bar}'}],
-                                                                  properties)
-    self.assertEquals([{'key1' : 'key1-FOO'},
-                       {'key2' : 'key2-BAR'}],
-                      deps)
 
   def test_top_pom_content_handler(self):
     handler = squarepants.pom_handlers.TopPomContentHandler()
@@ -557,6 +541,137 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
       self.assertEquals('base is FOO', df.properties['child.prop2'])
       self.assertEquals('CHILD', df.properties['base.overridden'])
 
+  def test_type_test_jar(self):
+    with temporary_dir() as tmpdir:
+      with open(os.path.join(tmpdir, 'pom.xml') , 'w') as pomfile:
+        pomfile.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+        <project xmlns="http://maven.apache.org/POM/4.0.0"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+          <groupId>com.example</groupId>
+          <artifactId>base</artifactId>
+          <description>A generic Square module.</description>
+          <version>HEAD-SNAPSHOT</version>
+          <dependencies>
+            <dependency>
+              <groupId>com.example</groupId>
+              <artifactId>dep1</artifactId>
+              <type>foo</type>
+              <version>1.0</version>
+            </dependency>
+            <dependency>
+              <groupId>com.example</groupId>
+              <artifactId>dep2</artifactId>
+              <type>test-jar</type>
+              <version>1.2.3</version>
+            </dependency>
+          </dependencies>
+        </project>
+      '''))
+
+      df = squarepants.pom_handlers.DependencyInfo('pom.xml', rootdir=tmpdir)
+      self.assertEquals({u'groupId' : 'com.example',
+                         u'artifactId' : 'dep1',
+                         u'type' : 'foo',
+                         u'exclusions' : [],
+                         u'version' : '1.0'
+                         }, df.dependencies[0])
+      self.assertEquals({u'groupId' : 'com.example',
+                         u'artifactId' : 'dep2',
+                         u'type' : 'test-jar',
+                         u'exclusions' : [],
+                         u'version' : '1.2.3'
+                         }, df.dependencies[1])
+      self.assertEquals(2, len(df.dependencies))
+
+      deps_from_pom = squarepants.pom_handlers.DepsFromPom(PomUtils.pom_provides_target(),
+                                                           rootdir=tmpdir)
+      refs = deps_from_pom.build_pants_refs(df.dependencies)
+      self.assertEquals("jar(org='com.example', name='dep1', rev='1.0', type_='foo',)", refs[0])
+      # type test-jar gets transformed into a 'tests' classifier
+      self.assertEquals("jar(org='com.example', name='dep2', rev='1.2.3', classifier='tests',)", refs[1])
+      self.assertEquals(2, len(refs))
+
+  def test_wire_info(self):
+    with temporary_dir() as tmpdir:
+      with open(os.path.join(tmpdir, 'pom.xml'), 'w') as pomfile:
+        pomfile.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+            <project xmlns="http://maven.apache.org/POM/4.0.0"
+                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+              <modelVersion>4.0.0</modelVersion>
+              <build>
+                <plugins>
+                  <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <executions>
+                      <execution>
+                        <id>unpack</id>
+                        <phase>initialize</phase>
+                        <goals>
+                          <goal>unpack</goal>
+                        </goals>
+                        <configuration>
+                          <artifactItems>
+                            <artifactItem>
+                              <groupId>com.squareup.protos</groupId>
+                              <artifactId>all-protos</artifactId>
+                              <overWrite>true</overWrite>
+                              <outputDirectory>${project.build.directory}/../src/main/wire_proto</outputDirectory>
+                              <includes>squareup/xp/validation.proto,squareup/xp/oauth/**,squareup/xp/v1/common.proto,squareup/xp/v1/http.proto</includes>
+                            </artifactItem>
+                            <artifactItem>
+                              <groupId>com.google.protobuf</groupId>
+                              <artifactId>protobuf-java</artifactId>
+                              <overWrite>true</overWrite>
+                              <outputDirectory>${project.build.directory}/../src/main/wire_proto</outputDirectory>
+                              <includes>**/descriptor.proto</includes>
+                            </artifactItem>
+                          </artifactItems>
+                        </configuration>
+                      </execution>
+                    </executions>
+                  </plugin>
+                  <plugin>
+                    <groupId>com.squareup.wire</groupId>
+                    <artifactId>wire-maven-plugin</artifactId>
+                    <executions>
+                      <execution>
+                        <goals>
+                          <goal>generate-sources</goal>
+                        </goals>
+                        <phase>generate-sources</phase>
+                      </execution>
+                    </executions>
+                    <configuration>
+                      <noOptions>true</noOptions>
+                      <serviceWriter>com.squareup.wire.SimpleServiceWriter</serviceWriter>
+                      <protoFiles>
+                        <protoFile>squareup/protobuf/rpc/rpc.proto</protoFile>
+                        <protoFile>squareup/sake/wire_format.proto</protoFile>
+                      </protoFiles>
+                      <roots>
+                        <root>squareup.franklin.settings.UnlinkSmsRequest</root>
+                        <root>squareup.franklin.settings.VerifyEmailRequest</root>
+                      </roots>
+                    </configuration>
+                  </plugin>
+                </plugins>
+              </build>
+            </project>
+        '''))
+      wf = squarepants.pom_handlers.WireInfo.from_pom('pom.xml', rootdir=tmpdir)
+      self.assertEquals(True, wf.no_options)
+      self.assertEquals(['squareup/protobuf/rpc/rpc.proto', 'squareup/sake/wire_format.proto'], wf.protos)
+      self.assertEquals(['squareup.franklin.settings.UnlinkSmsRequest', 'squareup.franklin.settings.VerifyEmailRequest'], wf.roots)
+      self.assertEquals([], wf.enum_options)
+      self.assertEquals('com.squareup.wire.SimpleServiceWriter', wf.service_writer)
+      self.assertEquals(None, wf.registry_class)
+      self.assertEquals(set([('com.squareup.protos', 'all-protos',), ('com.google.protobuf', 'protobuf-java',),]), set(wf.artifacts))
+      self.assertEquals('**/descriptor.proto', wf.artifacts[('com.google.protobuf', 'protobuf-java',)]['includes'])
 
   @pytest.mark.xfail
   def test_pom_provides_target(self):

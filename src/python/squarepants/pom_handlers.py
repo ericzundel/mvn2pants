@@ -5,10 +5,17 @@
 # will cache a singleton instance.
 #
 
+from abc import ABCMeta, abstractmethod
+from collections import defaultdict
+
 import logging
 import os
 import re
+import sys
 import xml.sax
+
+from generation_utils import GenerationUtils
+from target_template import Target
 
 
 logger = logging.getLogger(__name__)
@@ -18,38 +25,39 @@ def reset_caches():
   CachedDependencyInfos.reset()
   DependencyManagementFinder.reset()
   PomProvidesTarget.reset()
+  GenericPomInfo.reset()
 
-def resolve_properties(value, properties):
-  """substitute ${foo} with known property properties['foo']
 
-  :param string value: string to search for property patterns in.
-  :param dict properties: properties values extracted from hierarchy of pom files.
-  """
-  while True:
-    match = re.search(r"(\$\{[^}]*})", value)
-    if not match:
-      break
-    property_name = match.group(0)[2:-1]
-    if not properties.has_key(property_name):
-      break
-    value = "{prefix}{subst_value}{suffix}".format(
-            prefix=value[:match.start(0)],
-            subst_value=properties[property_name],
-            suffix=value[match.end(0):])
-  return value
+class MalformattedPOMException(Exception):
+  """Thrown when a pom.xml is malformatted."""
 
-def resolve_dependency_properties(dependencies_list, properties):
-  """Substitute property references in dependencies_list.
+  def __init__(self, *vargs):
+    super(MalformattedPOMException, self).__init__(self._assemble_error_message(*vargs))
 
-  :param dependencies_list: list of values extracted from <dependencies>
-  :type dependencies_list: list of dict
-  :param dict properties: properties values extracted from hierarchy of pom files.
-  """
-  for dep in dependencies_list:
-    for key, value in dep.iteritems():
-      if isinstance(value, basestring):
-        dep[key] = resolve_properties(value, properties)
-  return dependencies_list
+  @classmethod
+  def _assemble_error_message(cls, pom_file_path, error):
+    original_message = str(error)
+
+    details = ''
+    match = re.match(r'.*?pom[.]xml:(\d+):(\d+):.*', original_message)
+    if match:
+      # Attempt to print out the offending part of the pom.xml by line and column number.
+      try:
+        with open(pom_file_path, 'r') as f:
+          line_no = int(match.group(1))-1
+          column_no = int(match.group(2))-2
+          lines = f.readlines()
+          details = '\n{prev_line}{error_line}{column_text}^\n{next_line}'.format(
+            prev_line=lines[line_no-1] if line_no > 0 else '',
+            error_line=lines[line_no],
+            next_line=lines[line_no+1] if line_no < len(lines)-1 else '',
+            column_text=' '*max(0, column_no),
+          )
+      except:
+        pass
+
+    return 'Malformatted pom.xml {}:\n{}{}'.format(pom_file_path, error, details)
+
 
 class PomContentHandler(xml.sax.ContentHandler):
   """Base class for a simple sax parser to read a maven pom.xml file
@@ -113,13 +121,21 @@ class PomContentHandler(xml.sax.ContentHandler):
     xml.sax.ContentHandler.endDocument(self)
     PomContentHandler.invocations += 1
 
-
   def pathStartsWith(self, path_prefix):
     """Convenience routine to see if the path to the current element matches the path passed.
 
     :param list path_prefix: prefix to compare to the current path.
     """
     if (len(self.path) >= len(path_prefix)) and self.path[0:len(path_prefix)] == path_prefix:
+      return True
+    return False
+
+  def pathEndsWith(self, path_suffix):
+    """Convenience routine to see if the path to the current element matches the path passed.
+
+    :param list path_suffix: suffix to compare to the current path.
+    """
+    if (len(self.path) >= len(path_suffix)) and self.path[-len(path_suffix):] == path_suffix:
       return True
     return False
 
@@ -240,7 +256,254 @@ class _DFPomContentHandler(PomContentHandler):
     PomContentHandler.endElement(self, name)
 
 
-class DependencyInfo():
+class PomHandlerManager(PomContentHandler):
+
+  def __init__(self):
+    PomContentHandler.__init__(self)
+    info_types = [
+      WireInfo,
+      SpecialPropertiesInfo,
+      SignedJarInfo,
+    ]
+    self.infos = { info_type: info_type() for info_type in info_types }
+    self.handlers = [info.create_content_handler(self) for info in self.infos.values()]
+
+  def endElement(self, name):
+    for handler in self.handlers:
+      handler.endElement(name)
+
+    PomContentHandler.endElement(self, name)
+
+
+class GenericPomHandler(object):
+  def __init__(self, parent):
+    self.parent = parent
+
+  def pathStartsWith(self, path_prefix):
+    return self.parent.pathStartsWith(path_prefix)
+
+  def pathEndsWith(self, path_suffix):
+    return self.parent.pathEndsWith(path_suffix)
+
+  @property
+  def path(self):
+    return self.parent.path
+
+  @property
+  def content(self):
+    return self.parent.content
+
+
+class GenericPomInfo(object):
+  __metaclass__ = ABCMeta
+  # Dict which maps class names to dicts which map pom files to infos.
+  # I.e., { type -> { pom_file -> pom_info } }.
+  _ALL_CACHES = defaultdict(dict)
+
+  class MissingInfoError(Exception):
+    """Raised when a GenericPomInfo subclass instance is requested, but never created.
+
+    This probably means that it needs to be added to the info_types list in PomHandlerManager's
+    constructor.
+    """
+
+  @abstractmethod
+  def create_content_handler(self, parent):
+    """Creates a generic pom handler instance for this info."""
+
+  @classmethod
+  def get_cache(cls):
+    return cls._ALL_CACHES[cls]
+
+  @classmethod
+  def reset(cls):
+    cls._ALL_CACHES.clear()
+
+  @classmethod
+  def from_pom(cls, source_file_name, rootdir=None):
+    key = (source_file_name, rootdir)
+    if key in cls.get_cache():
+      return cls.get_cache()[key]
+    pom_handler = PomHandlerManager()
+    full_source_path = source_file_name
+    if rootdir:
+      full_source_path = os.path.join(rootdir, full_source_path)
+    try:
+      with open(full_source_path) as source:
+        xml.sax.parse(source, pom_handler)
+    except IOError:
+      return None
+    except xml.sax.SAXParseException as e:
+      raise MalformattedPOMException(source_file_name, e)
+
+    for info_type, info in pom_handler.infos.items():
+      cls._ALL_CACHES[info_type][key] = info
+    if key not in cls.get_cache():
+      raise cls.MissingInfoError('PomHandler has no {}!'.format(cls.__name__))
+    return cls.get_cache()[key]
+
+
+class WireInfo(GenericPomInfo):
+  """Holds info for wire generation."""
+
+  def __init__(self):
+    self.protos = []
+    self.roots = []
+    self.service_writer = None
+    self.no_options = None
+    self.enum_options = []
+    self.registry_class = None
+    self.artifacts = defaultdict(dict)
+    self.proto_source_directory = None
+
+  def create_content_handler(self, parent):
+    return WirePomHandler(parent, self)
+
+
+class WirePomHandler(GenericPomHandler):
+  """Finds relevant data for wire generation."""
+
+  def __init__(self, parent, info):
+    super(WirePomHandler, self).__init__(parent)
+    self.info = info
+    self.plugin_groupId = None
+    self.unpack_groupId = None
+    self.unpack_artifactId = None
+
+  def endElement(self, name):
+    if self.pathStartsWith(['project', 'build', 'plugins', 'plugin', 'executions', 'execution',
+                            'configuration', 'artifactItems', 'artifactItem']):
+      if self.pathEndsWith(['groupId']):
+        self.unpack_groupId = self.content.strip()
+      elif self.pathEndsWith(['artifactId']):
+        self.unpack_artifactId = self.content.strip()
+      elif self.pathEndsWith(['outputDirectory']):
+        self.info.artifacts[self._unpack_artifact]['output_directory'] = self.content.strip()
+      elif self.pathEndsWith(['includes']):
+        self.info.artifacts[self._unpack_artifact]['includes'] = self.content.strip()
+
+    if self.path == ['project', 'build', 'plugins', 'plugin', 'groupId',]:
+      self.plugin_groupId = self.content.strip()
+
+    if self.plugin_groupId == 'com.squareup.wire':
+      if self.path == ['project', 'build', 'plugins', 'plugin', 'configuration', 'protoFiles', 'protoFile']:
+        self.info.protos.append(self.content.strip())
+      elif self.path == ['project', 'build', 'plugins', 'plugin', 'configuration', 'roots', 'root']:
+        self.info.roots.append(self.content.strip())
+      elif self.pathEndsWith(['plugin', 'configuration', 'serviceWriter',]):
+        self.info.service_writer = self.content.strip()
+      elif self.pathEndsWith(['plugin', 'configuration','noOptions',]):
+        if self.content.strip() == 'true':
+          self.info.no_options = True
+        else:
+          self.info.no_options = None
+      elif self.pathEndsWith(['plugin', 'configuration','enumOptions','enumOption',]):
+        self.info.enum_options.append(self.content.strip())
+      elif self.pathEndsWith(['plugin', 'configuration','registryClass',]):
+        self.info.registry_class = self.content.strip()
+      elif self.pathEndsWith(['plugin', 'configuration', 'protoSourceDirectory',]):
+        self.info.proto_source_directory = self.content.strip()
+
+  @property
+  def _unpack_artifact(self):
+    return (self.unpack_groupId, self.unpack_artifactId)
+
+
+class SpecialPropertiesInfo(GenericPomInfo):
+  """Holds information for special properties, like those only set for particular OS's."""
+  def __init__(self):
+    self.properties = {}
+
+  def create_content_handler(self, parent):
+    return SpecialPropertiesHandler(parent, self)
+
+
+class SpecialPropertiesHandler(GenericPomHandler):
+
+  def __init__(self, parent, info):
+    super(SpecialPropertiesHandler, self).__init__(parent)
+    self.info = info
+    self._profile_active = False
+
+  def _same_platform(self, a, b):
+    a, b = a.lower().strip(), b.lower().strip()
+    if a == b: # They are trivially the same platform.
+      return True
+    # Check to see if we fall into some known synonyms.
+    platforms = [
+      {'darwin', 'mac os x', 'posix'},
+      {'win32', 'windows'},
+    ]
+    return any(a in group and b in group for group in platforms)
+
+  def endElement(self, name):
+    if not self.pathStartsWith(['project', 'profiles', 'profile']):
+      return
+    if name.strip() == 'profile':
+      self._profile_active = False
+      return
+    if self.path == ['project', 'profiles', 'profile', 'activation', 'os', 'name']:
+      self._profile_active = self._same_platform(sys.platform, self.content.strip())
+      return
+    if self._profile_active:
+      if self.path[-2] == 'properties':
+        self.info.properties[name.strip()] = self.content.strip()
+
+
+class SignedJarInfo(GenericPomInfo):
+  """Holds information about signed_jars."""
+
+  def __init__(self):
+    self.signed_jars = []
+    self.excludes = []
+    self.manifest_entries = {}
+    self.strip_version = False
+
+  def create_content_handler(self, parent):
+    return SignedJarHandler(parent, self)
+
+class SignedJarHandler(GenericPomHandler):
+
+  def __init__(self, parent, info):
+    super(SignedJarHandler, self).__init__(parent)
+    self.info = info
+    self._execution_id = None
+    self._execution_phase = None
+    self._execution_goals = set()
+    self._execution_output_dir = None
+
+  def endElement(self, name):
+    if self.pathStartsWith(['project', 'build', 'plugins', 'plugin', 'executions']):
+      if self._execution_phase == 'package':
+        if 'shade' in self._execution_goals:
+          if self.path[-2] == 'manifestEntries' and name:
+            self.info.manifest_entries[name.strip()] = self.content.strip()
+          if self.path[-3] == 'artifactSet' and name == 'exclude':
+            self.info.excludes.append(tuple(self.content.strip().split(':')))
+        elif 'copy-dependencies' in self._execution_goals:
+          if name == 'outputDirectory':
+            self._execution_output_dir = self.content.strip()
+          elif name == 'includeArtifactIds':
+            artifact_ids = self.content.strip().split(',')
+            if self._execution_output_dir and '/lib-signed' in self._execution_output_dir:
+              self.info.signed_jars.extend(artifact_ids)
+          elif name == 'stripVersion':
+            self.info.strip_version = self.content.strip().lower() == 'true'
+      if name == 'id':
+        self._execution_id = self.content.strip()
+      elif name == 'phase':
+        self._execution_phase = self.content.strip()
+      elif name == 'goal':
+        self._execution_goals.add(self.content.strip())
+      elif name == 'execution':
+        # Execution ended, clear variables.
+        self._execution_id = None
+        self._execution_phase = None
+        self._execution_goals = set()
+        self._execution_output_dir = None
+
+
+class DependencyInfo(object):
   """Process a module pom.xml file looking for dependencies."""
 
   def __init__(self, source_file_name, rootdir=None):
@@ -248,6 +511,10 @@ class DependencyInfo():
     self._groupId = None
     self._properties = {}
     self._dependencies = []
+    self._parent = None
+    self._source_file_name = source_file_name
+    self._rootdir = rootdir
+    # Parse the pom file.
     self._parse(source_file_name, rootdir)
 
   def _parse(self, source_file_name, rootdir):
@@ -257,15 +524,21 @@ class DependencyInfo():
     else:
       full_source_path = source_file_name
 
+    if os.path.basename(full_source_path) != 'pom.xml':
+      full_source_path = os.path.join(full_source_path, 'pom.xml')
+
     try:
       with open(full_source_path) as source:
         xml.sax.parse(source, pomHandler)
     except IOError:
       # assume this file has been removed for a good reason and just continue normally
       return
+    except xml.sax.SAXParseException as e:
+      raise MalformattedPOMException(source_file_name, e)
 
     self._artifactId = pomHandler.artifactId
     self._groupId = pomHandler.groupId
+    self._parent = pomHandler.parent
 
     # Since dependencies are just dicts, we keep track of keys separately.  Maybe in the future
     # it would be good to create a Dependency data structure and return a set or ordered dictionary
@@ -276,12 +549,8 @@ class DependencyInfo():
         dep_keys.add('{0} {1}'.format(dep['groupId'], dep['artifactId']))
         self._dependencies.append(dep)
 
-    if 'groupId' in pomHandler.parent \
-        and 'artifactId' in pomHandler.parent \
-        and 'relativePath' in pomHandler.parent:
-      parent_path = os.path.normpath(os.path.join(os.path.dirname(source_file_name),
-                                                  pomHandler.parent['relativePath']))
-      parent_df = CachedDependencyInfos().get(parent_path, rootdir=rootdir)
+    parent_df = self.parent
+    if parent_df:
       for dep in parent_df.dependencies:
         key = '{0} {1}'.format(dep['groupId'], dep['artifactId'])
         # dependencies declared in parent poms can be overridden
@@ -290,12 +559,32 @@ class DependencyInfo():
       self._properties.update(parent_df.properties)
 
     self._properties.update(pomHandler.properties)
-
-    resolve_dependency_properties(self._dependencies, pomHandler.properties)
-
-    # Fixup property references
     for key, value in self._properties.items():
-      self._properties[key] = resolve_properties(value, self._properties)
+      self._properties[key] = GenerationUtils.symbol_substitution(self._properties, value)
+    self._dependencies = GenerationUtils.symbol_substitution_on_dicts(self._properties,
+                                                                      self._dependencies)
+
+  @property
+  def source_file_name(self):
+    return self._source_file_name
+
+  @property
+  def root_directory(self):
+    return self._rootdir
+
+  @property
+  def parent(self):
+    if 'groupId' in self._parent \
+        and 'artifactId' in self._parent \
+        and 'relativePath' in self._parent:
+      relative_parent_pom = self._parent['relativePath']
+      if os.path.basename(relative_parent_pom) != 'pom.xml':
+        relative_parent_pom = os.path.join(relative_parent_pom, 'pom.xml')
+      parent_path = os.path.normpath(os.path.join(os.path.dirname(self.source_file_name),
+                                                  relative_parent_pom))
+      parent_df = CachedDependencyInfos().get(parent_path, rootdir=self.root_directory)
+      return parent_df
+    return None
 
   @property
   def artifactId(self):
@@ -359,7 +648,6 @@ class DependencyManagementFinder():
     """Process a pom.xml file containing the <dependencyManagement> tag.
        Returns an array of dictionaries containing the children of the <dependency> tag.
     """
-
     if source_file_name in DependencyManagementFinder._cache:
       return DependencyManagementFinder._cache[source_file_name]
     if self._rootdir:
@@ -368,8 +656,8 @@ class DependencyManagementFinder():
     with open(source_file_name) as source:
       xml.sax.parse(source, pomHandler)
     source.close()
-
-    return resolve_dependency_properties(pomHandler.dependency_management, pomHandler.properties)
+    return GenerationUtils.symbol_substitution_on_dicts(pomHandler.properties,
+                                                        pomHandler.dependency_management)
 
 
 
@@ -442,7 +730,7 @@ class DepsFromPom():
     self._rootdir=rootdir
     self._pom_provides_target = pom_provides_target
 
-  def get(self, source_file_name):
+  def get(self, source_file_name, raw_deps=False):
     """:param source_file_name: relative path of pom.xml file to analyze
     :return: tuple of (list of library deps, list of test refs)
     """
@@ -460,6 +748,9 @@ class DepsFromPom():
         test_deps.append(dep)
       else:
         lib_deps.append(dep)
+
+    if raw_deps:
+      return lib_deps, test_deps
 
     lib_pants_refs = self.build_pants_refs(lib_deps)
     test_pants_refs = self.build_pants_refs(test_deps)
@@ -532,17 +823,22 @@ class DepsFromPom():
           for jar_exclude in dep['exclusions']:
             jar_excludes += ".exclude(org='{groupId}', name='{artifactId}')".format(
               groupId=jar_exclude['groupId'], artifactId=jar_exclude['artifactId'])
-
-        if 'classifier' in dep:
-          classifier = ", classifier='{classifier}'".format(classifier=dep['classifier'])
+        classifier = dep.get('classifier') # Important to use 'get', so we default to None.
+        if dep.get('type') == 'test-jar':
+          # In our repo, this is special, *or* ivy doesn't translate this correctly.
+          # Transform this into a classifier named 'tests' instead
+          classifier = 'tests'
+          type_ = None
         else:
-          classifier = ''
-        pants_refs.append("jar(org='{groupId}', name='{artifactId}', rev='{version}'{classifier}){jar_excludes}"
-                          .format(groupId=dep['groupId'],
-                                  artifactId=dep['artifactId'],
-                                  version=dep['version'],
-                                  classifier=classifier,
-                                  jar_excludes=jar_excludes))
+          type_ = dep.get('type')
+
+        pants_refs.append(Target.jar.format(
+          org=dep['groupId'],
+          name=dep['artifactId'],
+          rev=dep['version'],
+          classifier=classifier,
+          type_=type_,
+        ) + jar_excludes)
     return pants_refs
 
   def get_property(self, name):

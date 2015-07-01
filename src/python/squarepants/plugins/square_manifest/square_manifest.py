@@ -1,4 +1,6 @@
 # coding=utf-8
+# Copyright 2015 Pants project contributors (see CONTRIBUTORS.md).
+# Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 import logging
 import os
@@ -9,7 +11,6 @@ from pants.scm.git import Git
 
 
 logger = logging.getLogger(__file__)
-
 
 class SquareManifest:
   """Provides additional fields to MANIFEST.MF."""

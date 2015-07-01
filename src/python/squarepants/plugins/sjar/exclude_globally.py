@@ -14,7 +14,7 @@ logger = logging.getLogger(__file__)
 
 def _load_excludes_from_config():
   excludes=[]
-  for exclude in Config.from_cache().getlist('sjar', 'excludes', default=[]):
+  for exclude in Config.load().getlist('sjar', 'excludes', default=[]):
     excludes.append(Exclude(org=exclude['org'], name=exclude['name']))
   return excludes
 

@@ -10,6 +10,8 @@ target(
   name = 'squarepants_test',
   dependencies = [
     ':common',
+    ':build_component',
+    ':generation_utils',
     ':pom_handlers',
     ':pom_properties',
     ':pom_to_build',
@@ -24,6 +26,24 @@ python_library(
   dependencies = [
     'squarepants/src/main/python/squarepants:pom_handlers',
     'squarepants/src/main/python/squarepants:pom_utils',
+  ],
+)
+
+python_tests(
+  name = 'build_component',
+  sources = [ 'test_build_component.py' ],
+  dependencies = [
+    ':common',
+    'squarepants/src/main/python/squarepants:build_component',
+  ],
+)
+
+python_tests(
+  name = 'generation_utils',
+  sources = [ 'test_generation_utils.py' ],
+  dependencies = [
+    ':common',
+    'squarepants/src/main/python/squarepants:generation_utils',
   ],
 )
 

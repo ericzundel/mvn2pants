@@ -5,11 +5,12 @@
 
 from contextlib import contextmanager
 import os
+import sys
 from textwrap import dedent
 import unittest2 as unittest
 
-from squarepants.pom_to_build import (PomToBuild, is_aux, infer_target_name, infer_build_name,
-                                      write_build_file)
+from squarepants.pom_to_build import PomToBuild
+from squarepants.generation_context import GenerationContext
 from squarepants_test.test_utils import temporary_dir, reset_caches
 
 
@@ -24,17 +25,47 @@ class PomToBuildTest(unittest.TestCase):
     # Restore the working directory
     os.chdir(self._wd)
 
-  def assert_file_contents(self, filename, expected_contents):
-    self.assertTrue(os.path.exists(filename))
+  def assert_file_contents(self, filename, expected_contents, ignore_blanklines=True,
+                           ignore_trailing_spaces=True,
+                           ignore_leading_spaces=False):
+    self.assertTrue(os.path.exists(filename), msg="Missing file {}".format(filename))
+
+    def reformat(text):
+      lines = text.split('\n')
+      if ignore_blanklines:
+        lines = [line for line in lines if line.strip()]
+      if ignore_leading_spaces and ignore_trailing_spaces:
+        lines = [line.strip() for line in lines]
+      elif ignore_leading_spaces:
+        lines = [line.lstrip() for line in lines]
+      elif ignore_trailing_spaces:
+        lines = [line.rstrip() for line in lines]
+      return '\n'.join(lines)
+
     with open(filename, 'r') as f:
       contents = f.read()
+
+    print('\nExpected: ')
+    print(dedent(expected_contents))
+    print('\nReceived: ')
+    print(dedent(contents))
+    expected_contents = reformat(expected_contents)
+    contents = reformat(contents)
     self.assertEquals(expected_contents, contents)
 
   def make_file(self, filename, contents):
+    if os.path.dirname(filename):
+      if not os.path.exists(os.path.dirname(filename)):
+        os.makedirs(os.path.dirname(filename))
     with open(filename, 'w') as f:
       f.write(contents)
 
   def test_write_build_gen(self):
+    gen_context = GenerationContext(print_headers=False)
+    is_aux = gen_context.is_aux
+    infer_target_name = gen_context.infer_target_name
+    infer_build_name = gen_context.infer_build_name
+    write_build_file = gen_context.write_build_file
     with temporary_dir() as build_dir:
       self.assertFalse(is_aux(build_dir))
       self.assertEquals('foo', infer_target_name(build_dir, 'foo'))
@@ -45,6 +76,11 @@ class PomToBuildTest(unittest.TestCase):
         self.assertEquals('contents of BUILD.gen', build_file.read())
 
   def test_write_build_aux(self):
+    gen_context = GenerationContext(print_headers=False)
+    is_aux = gen_context.is_aux
+    infer_target_name = gen_context.infer_target_name
+    infer_build_name = gen_context.infer_build_name
+    write_build_file = gen_context.write_build_file
     with temporary_dir() as build_dir:
       with open(os.path.join(build_dir, 'BUILD'), 'w'):
         self.assertTrue(is_aux(build_dir))
@@ -55,29 +91,64 @@ class PomToBuildTest(unittest.TestCase):
         with open(os.path.join(build_dir, 'BUILD.aux')) as build_file:
           self.assertEquals('contents of BUILD.aux', build_file.read())
 
-  def test_format_jar_deps(self):
-    pom_to_build = PomToBuild()
-    with temporary_dir() as build_dir:
-      # Dependencies should be sorted in alphabetical order
-      self.assertEquals('''
-jar_library(name='jar_files',
-  jars = [
-    'bar',
-    'baz',
-    'foo'
-  ],
-)
-''', pom_to_build.format_jar_deps(["'foo'", "'bar'", "'baz'"], build_dir))
-      # Duplicates should be suppressed
-      self.assertEquals('''
-jar_library(name='jar_files',
-  jars = [
-    baz,
-    foo
-  ],
-)
-''', pom_to_build.format_jar_deps(['foo', 'foo', 'baz'], build_dir))
+  def create_pom_with_modules(self, path, modules, extra_project_contents=None,
+                              extra_parent_contents=None,
+                              extra_root_contents=None):
+    with open(os.path.join(path, 'pom.xml'), 'w') as pomfile:
+      triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
+                <project>
 
+                  <groupId>com.example</groupId>
+                  <artifactId>parent</artifactId>
+                  <version>HEAD-SNAPSHOT</version>
+
+                  <modules>
+                    {module_text}
+                  </modules>
+                  {extra_contents}
+                </project>
+              """
+      pomfile.write(smart_dedent(triple_quote_string).format(
+        module_text='\n'.join('    <module>{}</module>'.format(module) for module in modules),
+        extra_contents=extra_root_contents or ''
+      ))
+    os.makedirs(os.path.join('parents', 'base'))
+    with open(os.path.join('parents', 'base', 'pom.xml'), 'w') as pomfile:
+      triple_quote_string = """<project>
+
+                  <groupId>com.example</groupId>
+                  <artifactId>{module}</artifactId>
+                  <version>HEAD-SNAPSHOT</version>
+
+                  <dependencyManagement>
+                  </dependencyManagement>
+                </project>
+                """
+      module_text = '\n'.join(smart_dedent(triple_quote_string).format(module=module)
+                              for module in modules[:1])
+      if extra_parent_contents:
+        module_text += extra_parent_contents
+      print(module_text)
+      pomfile.write('<?xml version="1.0" encoding="UTF-8"?>\n{}'.format(module_text))
+    for module in modules:
+      triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
+                <project>
+
+                  <groupId>com.example</groupId>
+                  <artifactId>{module}</artifactId>
+                  <version>HEAD-SNAPSHOT</version>
+
+                  <dependencies>
+                  </dependencies>
+
+                  {extra_contents}
+                </project>
+      """
+      with open(os.path.join(path, module, 'pom.xml'), 'w') as pomfile:
+        pomfile.write(smart_dedent(triple_quote_string).format(
+            module=module,
+          extra_contents = extra_project_contents or ''
+        ))
 
   @contextmanager
   def setup_two_child_poms(self):
@@ -85,7 +156,7 @@ jar_library(name='jar_files',
       os.chdir(tmpdir)
 
       with open(os.path.join('pom.xml') , 'w') as pomfile:
-        pomfile.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+        triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
                 <project>
 
                   <groupId>com.example</groupId>
@@ -97,11 +168,12 @@ jar_library(name='jar_files',
                     <module>child2</module>
                   </modules>
                 </project>
-              '''))
+              """
+        pomfile.write(smart_dedent(triple_quote_string))
 
       os.makedirs(os.path.join('parents', 'base'))
       with open(os.path.join('parents', 'base', 'pom.xml'), 'w') as base_pom:
-        base_pom.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+        triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
                 <project>
 
                   <groupId>com.example</groupId>
@@ -110,7 +182,8 @@ jar_library(name='jar_files',
 
                   <dependencyManagement>
                   </dependencyManagement>
-                </project>'''))
+                </project>"""
+        base_pom.write(smart_dedent(triple_quote_string))
 
       child1_path_name =  'child1'
       # Make some empty directories to hold BUILD.gen files
@@ -122,7 +195,7 @@ jar_library(name='jar_files',
       os.makedirs(os.path.join(child1_path_name, 'src', 'test', 'resources'))
       child1_pom_name = os.path.join(child1_path_name, 'pom.xml')
       with open(child1_pom_name, 'w') as child1_pomfile:
-        child1_pomfile.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+        triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
                 <project>
 
                   <groupId>com.example</groupId>
@@ -137,7 +210,8 @@ jar_library(name='jar_files',
                     </dependency>
                   </dependencies>
                 </project>
-              '''))
+              """
+        child1_pomfile.write(smart_dedent(triple_quote_string))
       child2_path_name = os.path.join('child2')
       os.makedirs(os.path.join(child2_path_name, 'src', 'main', 'java'))
       os.makedirs(os.path.join(child2_path_name, 'src', 'main', 'proto'))
@@ -147,7 +221,7 @@ jar_library(name='jar_files',
       os.makedirs(os.path.join(child2_path_name, 'src', 'test', 'resources'))
       child2_pom_name = os.path.join(child2_path_name, 'pom.xml')
       with open(child2_pom_name, 'w') as child2_pomfile:
-        child2_pomfile.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+        triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
                 <project>
 
                   <groupId>com.example</groupId>
@@ -156,17 +230,29 @@ jar_library(name='jar_files',
                   <dependencies>
                   </dependencies>
                 </project>
-              '''))
+              """
+        child2_pomfile.write(smart_dedent(triple_quote_string))
       yield tmpdir
 
 
   def test_ignore_empty_dirs_in_self(self):
     with self.setup_two_child_poms() as tmpdir:
-      PomToBuild().convert_pom('child1/pom.xml', print_headers=False)
+      PomToBuild().convert_pom('child1/pom.xml',
+                               generation_context=GenerationContext(print_headers=False))
 
       # Since all the dirs are empty, we should only have a project level pom file,
       # the others should be blank
-      self.assert_file_contents('child1/BUILD.gen', """target(name='lib')""")
+      triple_quote_string = """
+        target(name='lib')
+
+
+        target(name='test',
+          dependencies = [
+            ':lib'
+          ],
+        )
+      """
+      self.assert_file_contents('child1/BUILD.gen', smart_dedent(triple_quote_string))
 
       self.assertEquals([], os.listdir('child1/src/main/java'))
       self.assertEquals([], os.listdir('child1/src/main/proto'))
@@ -185,9 +271,10 @@ jar_library(name='jar_files',
       self.make_file('child1/src/test/java/FooTest.java', 'class FooTest { }')
       self.make_file('child1/src/test/proto/foo_test.proto', 'message FooTest_Message {}')
       self.make_file('child1/src/test/resources/foo_test.txt', "Testing: Foo bar baz.")
-      PomToBuild().convert_pom('child1/pom.xml', rootdir=tmpdir, print_headers=False)
+      PomToBuild().convert_pom('child1/pom.xml', rootdir=tmpdir,
+                               generation_context=GenerationContext(print_headers=False))
 
-      self.assert_file_contents('child1/BUILD.gen', """
+      triple_quote_string = """
 target(name='proto',
   dependencies = [
     'child1/src/main/proto:proto'
@@ -205,11 +292,12 @@ target(name='test',
     'child1/src/test/java:test'
   ],
 )
-""")
+"""
+      self.assert_file_contents('child1/BUILD.gen', triple_quote_string)
 
       # There should be no references to child2 in the BUILD files under src/main
       # because the directories under child2 are empty
-      self.assert_file_contents('child1/src/main/java/BUILD.gen', """
+      triple_quote_string = """
 java_library(name='lib',
   sources = rglobs('*.java'),
   resources = [
@@ -222,29 +310,32 @@ java_library(name='lib',
                       name='child1',
                       repo=square,),  # see squarepants/plugin/repo/register.py
 )
-""")
-      self.assert_file_contents('child1/src/main/proto/BUILD.gen', """
+"""
+      self.assert_file_contents('child1/src/main/java/BUILD.gen', triple_quote_string)
+      triple_quote_string = """
 java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
   dependencies = [],
 )
-""")
-      self.assert_file_contents('child1/src/main/resources/BUILD.gen', """
+"""
+      self.assert_file_contents('child1/src/main/proto/BUILD.gen', triple_quote_string)
+      triple_quote_string = """
 resources(name='resources',
   sources = rglobs('*', exclude=[globs('BUILD*')]),
   dependencies = [],
 )
-""")
+"""
+      self.assert_file_contents('child1/src/main/resources/BUILD.gen', triple_quote_string)
 
       # TODO(Eric Ayers) The provides statement in src/test/java is the same as in lib.  This probably
       # shouldn't be duplicated like this!
-      self.assert_file_contents('child1/src/test/java/BUILD.gen', """
+      triple_quote_string = """
 junit_tests(name='test',
    # TODO: Ideally, sources between :test and :lib should not intersect
   sources = rglobs('*.java'),
   dependencies = [
-    ':lib',
+    ':lib'
   ],
 )
 
@@ -263,8 +354,9 @@ java_library(name='lib',
                       name='child1',
                       repo=square,),  # see squarepants/plugin/repo/register.py
 )
-""")
-      self.assert_file_contents('child1/src/test/proto/BUILD.gen', """
+"""
+      self.assert_file_contents('child1/src/test/java/BUILD.gen', triple_quote_string)
+      triple_quote_string = """
 java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
@@ -272,13 +364,15 @@ java_protobuf_library(name='proto',
     'child1/src/main/proto:proto'
   ],
 )
-""")
-      self.assert_file_contents('child1/src/test/resources/BUILD.gen', """
+"""
+      self.assert_file_contents('child1/src/test/proto/BUILD.gen', triple_quote_string)
+      triple_quote_string = """
 resources(name='resources',
   sources = rglobs('*', exclude=[globs('BUILD*')]),
   dependencies = [],
 )
-""")
+"""
+      self.assert_file_contents('child1/src/test/resources/BUILD.gen', triple_quote_string)
 
 
   def test_nonempty_self_and_dep(self):
@@ -296,27 +390,27 @@ resources(name='resources',
       self.make_file('child2/src/test/java/BarTest.java', 'class BarTest { }')
       self.make_file('child2/src/test/proto/bar_test.proto', 'message BarTest_Message {}')
       self.make_file('child2/src/test/resources/bar_test.txt', "Testing: Foo bar baz.")
-      PomToBuild().convert_pom('child1/pom.xml', rootdir=tmpdir, print_headers=False)
-      self.assert_file_contents('child1/BUILD.gen', """
+      PomToBuild().convert_pom('child1/pom.xml', rootdir=tmpdir,
+                               generation_context=GenerationContext(print_headers=False))
+      triple_quote_string = """
 target(name='proto',
   dependencies = [
     'child1/src/main/proto:proto'
   ],
 )
-
 target(name='lib',
   dependencies = [
-    'child1/src/main/java:lib'
+   'child1/src/main/java:lib'
   ],
 )
-
 target(name='test',
   dependencies = [
     'child1/src/test/java:test'
   ],
 )
-""")
-      self.assert_file_contents('child1/src/main/java/BUILD.gen', """
+"""
+      self.assert_file_contents('child1/BUILD.gen', triple_quote_string, ignore_leading_spaces=True)
+      triple_quote_string = """
 java_library(name='lib',
   sources = rglobs('*.java'),
   resources = [
@@ -330,9 +424,10 @@ java_library(name='lib',
                       name='child1',
                       repo=square,),  # see squarepants/plugin/repo/register.py
 )
-""")
+"""
+      self.assert_file_contents('child1/src/main/java/BUILD.gen', triple_quote_string)
 
-      self.assert_file_contents('child1/src/main/proto/BUILD.gen', """
+      triple_quote_string = """
 java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
@@ -340,20 +435,22 @@ java_protobuf_library(name='proto',
     'child2/src/main/java:lib'
   ],
 )
-""")
-      self.assert_file_contents('child1/src/main/resources/BUILD.gen', """
+"""
+      self.assert_file_contents('child1/src/main/proto/BUILD.gen', triple_quote_string)
+      triple_quote_string = """
 resources(name='resources',
   sources = rglobs('*', exclude=[globs('BUILD*')]),
   dependencies = [],
 )
-""")
+"""
+      self.assert_file_contents('child1/src/main/resources/BUILD.gen', triple_quote_string)
 
-      self.assert_file_contents('child1/src/test/java/BUILD.gen', """
+      triple_quote_string = """
 junit_tests(name='test',
    # TODO: Ideally, sources between :test and :lib should not intersect
   sources = rglobs('*.java'),
   dependencies = [
-    ':lib',
+    ':lib'
   ],
 )
 
@@ -373,8 +470,9 @@ java_library(name='lib',
                       name='child1',
                       repo=square,),  # see squarepants/plugin/repo/register.py
 )
-""")
-      self.assert_file_contents('child1/src/test/proto/BUILD.gen', """
+"""
+      self.assert_file_contents('child1/src/test/java/BUILD.gen', triple_quote_string)
+      triple_quote_string = """
 java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
@@ -383,20 +481,22 @@ java_protobuf_library(name='proto',
     'child2/src/main/java:lib'
   ],
 )
-""")
-      self.assert_file_contents('child1/src/test/resources/BUILD.gen', """
+"""
+      self.assert_file_contents('child1/src/test/proto/BUILD.gen', triple_quote_string)
+      triple_quote_string = """
 resources(name='resources',
   sources = rglobs('*', exclude=[globs('BUILD*')]),
   dependencies = [],
 )
-""")
+"""
+      self.assert_file_contents('child1/src/test/resources/BUILD.gen', triple_quote_string)
 
 
   def test_external_jar_ref(self):
     with temporary_dir() as tmpdir:
       os.chdir(tmpdir)
       with open(os.path.join('pom.xml') , 'w') as pomfile:
-        pomfile.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+        triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
                       <project>
 
                         <groupId>com.example</groupId>
@@ -407,11 +507,12 @@ resources(name='resources',
                           <module>child1</module>
                         </modules>
                       </project>
-                    '''))
+                    """
+        pomfile.write(smart_dedent(triple_quote_string))
 
       os.makedirs(os.path.join('parents', 'base'))
       with open(os.path.join('parents', 'base', 'pom.xml'), 'w') as base_pom:
-        base_pom.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+        triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
                     <project>
 
                       <groupId>com.example</groupId>
@@ -420,14 +521,15 @@ resources(name='resources',
 
                       <dependencyManagement>
                       </dependencyManagement>
-                    </project>'''))
+                    </project>"""
+        base_pom.write(smart_dedent(triple_quote_string))
 
       child1_path_name =  'child1'
       # Make some empty directories to hold BUILD.gen files
       os.makedirs(os.path.join(child1_path_name, 'src', 'main', 'java'))
       child1_pom_name = os.path.join(child1_path_name, 'pom.xml')
       with open(child1_pom_name, 'w') as child1_pomfile:
-        child1_pomfile.write(dedent('''<?xml version="1.0" encoding="UTF-8"?>
+        triple_quote_string = """<?xml version="1.0" encoding="UTF-8"?>
                     <project>
 
                       <groupId>com.example</groupId>
@@ -440,27 +542,35 @@ resources(name='resources',
                           <artifactId>foo</artifactId>
                           <version>1.2.3</version>
                           <classifier>shaded</classifier>
+                          <type>tar.gz</type>
                         </dependency>
 
                       </dependencies>
                     </project>
-                  '''))
+                  """
+        child1_pomfile.write(smart_dedent(triple_quote_string))
       self.make_file('child1/src/main/java/Foo.java', 'class Foo { }')
-      PomToBuild().convert_pom('child1/pom.xml', rootdir=tmpdir, print_headers=False)
-      self.assert_file_contents('child1/BUILD.gen', """
+      PomToBuild().convert_pom('child1/pom.xml', rootdir=tmpdir,
+                               generation_context=GenerationContext(print_headers=False))
+      triple_quote_string = """
 target(name='lib',
   dependencies = [
     'child1/src/main/java:lib'
   ],
 )
-""")
-      self.assert_file_contents('child1/src/main/java/BUILD.gen', """
+target(name='test',
+  dependencies = [
+    ':lib'
+  ],
+)
+"""
+      self.assert_file_contents('child1/BUILD.gen', triple_quote_string)
+      triple_quote_string = """
 java_library(name='lib',
   sources = rglobs('*.java'),
   resources = [],
   dependencies = [
-        ':jar_files',
-
+    ':jar_files'
   ],
   provides = artifact(org='com.example',
                       name='child1',
@@ -469,7 +579,405 @@ java_library(name='lib',
 
 jar_library(name='jar_files',
   jars = [
-    jar(org='com.example.external', name='foo', rev='1.2.3', classifier='shaded')
+    jar(org='com.example.external', name='foo', rev='1.2.3', classifier='shaded', type_='tar.gz',)
   ],
 )
-""")
+"""
+      self.assert_file_contents('child1/src/main/java/BUILD.gen', triple_quote_string)
+
+  def test_default_test_target(self):
+    with temporary_dir() as tmp_dir:
+      os.chdir(tmp_dir)
+      proto_file = 'project1/src/main/proto/foo.proto'
+      java_file = 'project2/src/main/java/Foo.java'
+      wire_file = 'project3/src/main/wire_proto/foo.proto'
+      self.make_file(proto_file, '/* proto file */')
+      self.make_file(java_file, '/* java file */')
+      self.make_file(wire_file, '/* wire proto file */')
+      projects = ['project1', 'project2', 'project3']
+      self.create_pom_with_modules(tmp_dir, projects)
+      for project in projects:
+        PomToBuild().convert_pom(os.path.join(project, 'pom.xml'), rootdir=tmp_dir,
+                                 generation_context=GenerationContext(print_headers=False))
+      triple_quote_string = """
+        target(name='proto',
+          dependencies = [
+            'project1/src/main/proto:proto'
+          ],
+        )
+        target(name='lib',
+          dependencies = [
+            ':proto'
+          ],
+        )
+        target(name='test',
+          dependencies = [
+            ':lib'
+          ],
+        )
+      """
+      self.assert_file_contents('project1/BUILD.gen', triple_quote_string,
+                                ignore_leading_spaces=True)
+      triple_quote_string = """
+        target(name='lib',
+          dependencies = [
+            'project2/src/main/java:lib'
+          ],
+        )
+        target(name='test',
+          dependencies = [
+            ':lib'
+          ],
+        )
+      """
+      self.assert_file_contents('project2/BUILD.gen', triple_quote_string,
+                                ignore_leading_spaces=True)
+      triple_quote_string = """
+        target(name='wire_proto',
+          dependencies = [
+            'project3/src/main/wire_proto:wire_proto'
+          ],
+        )
+        target(name='lib',
+          dependencies = [
+            ':wire_proto'
+          ],
+        )
+        target(name='test',
+          dependencies = [
+            ':lib'
+          ],
+        )
+      """
+      self.assert_file_contents('project3/BUILD.gen', triple_quote_string,
+                                ignore_leading_spaces=True)
+
+  def test_jvm_binary_target(self):
+    with temporary_dir() as tmp_dir:
+      os.chdir(tmp_dir)
+      self.make_file('example-app/src/main/java/com/example/ExampleApp.java', '/* java file */')
+
+      extra_contents = """
+      <properties>
+        <project.mainclass>com.example.ExampleApp</project.mainclass>
+      </properties>
+      """
+      self.create_pom_with_modules(tmp_dir, ['example-app'],
+                                   extra_project_contents=extra_contents)
+
+      PomToBuild().convert_pom(os.path.join('example-app', 'pom.xml'), rootdir=tmp_dir,
+                               generation_context=GenerationContext(print_headers=False))
+
+      expected_contents = """
+        jvm_binary(name='example-app',
+          main = 'com.example.ExampleApp',
+          basename= 'example-app',
+          dependencies = [
+            ':lib'
+          ],
+          manifest_entries = square_manifest(),
+        )
+
+        target(name='lib',
+          dependencies = [
+            'example-app/src/main/java:lib'
+          ],
+        )
+
+        target(name='test',
+          dependencies = [
+            ':lib'
+          ],
+        )
+      """
+      self.assert_file_contents('example-app/BUILD.gen', expected_contents,
+                                 ignore_leading_spaces=True)
+
+  @property
+  def _system_specific_properties_dependencies_text(self):
+    return dedent('''
+    <dependencies>
+      <dependency>
+        <groupId>com.example</groupId>
+        <artifactId>foobar-${arch}</artifactId>
+        <version>${arch}-1234</version>
+      </dependency>
+    </dependencies>
+    ''')
+
+  @property
+  def _system_specific_properties_profiles_text(self):
+    return dedent('''
+    <profiles>
+      <profile>
+        <id>not-me</id>
+        <activation>
+          <os>
+            <name>not-my-system-type</name>
+          </os>
+        </activation>
+        <properties>
+          <arch>not-my-architecture</arch>
+        </properties>
+      </profile>
+      <profile>
+        <id>who knows, something unix-based</id>
+        <activation>
+          <os>
+            <name>{system_name}</name>
+          </os>
+        </activation>
+        <properties>
+          <arch>for-my-architecture</arch>
+        </properties>
+      </profile>
+      <profile>
+        <id>also-not-me</id>
+        <activation>
+          <os>
+            <name>hal</name>
+          </os>
+        </activation>
+        <properties>
+          <arch>space-ship-9000</arch>
+        </properties>
+      </profile>
+    </profiles>
+    '''.format(system_name=sys.platform))
+
+  @property
+  def _system_specific_properties_expected_text(self):
+    return """
+java_library(name='lib',
+  sources = rglobs('*.java'),
+  resources = [],
+  dependencies = [
+    ':jar_files'
+  ],
+  provides = artifact(org='com.example',
+                      name='project',
+                      repo=square,),  # see squarepants/plugin/repo/register.py
+)
+
+jar_library(name='jar_files',
+  jars = [
+    jar(org='com.example', name='foobar-for-my-architecture', rev='for-my-architecture-1234',)
+  ],
+)"""
+
+  def test_system_specific_properties(self):
+    dependencies = self._system_specific_properties_dependencies_text
+    profiles = self._system_specific_properties_profiles_text
+    with temporary_dir() as tmp_dir:
+      os.chdir(tmp_dir)
+      self.make_file('project/src/main/java/Foobar.java', '/* nothing to see here */')
+      self.create_pom_with_modules(tmp_dir, ['project'],
+                                   extra_project_contents=dependencies + profiles)
+      PomToBuild().convert_pom('project/pom.xml', rootdir=tmp_dir,
+                               generation_context=GenerationContext(print_headers=False))
+
+      self.assert_file_contents('project/src/main/java/BUILD.gen',
+                                self._system_specific_properties_expected_text,
+                                ignore_leading_spaces=True,
+                                ignore_trailing_spaces=True,
+                                ignore_blanklines=True)
+
+  @property
+  def _signed_jar_expected_text(self):
+    return '''
+jvm_binary(name='project',
+  main = 'com.example.project.Project',
+  basename= 'project',
+  dependencies = [
+    ':lib',
+    ':project-signed-jars'
+  ],
+  manifest_entries = square_manifest({
+    'Class-Path': 'project-signed-jars/artifact-one.jar project-signed-jars/artifact-two.jar',
+  }),
+  deploy_excludes = [
+    exclude(org='org.barfoo', name='artifact-two'),
+    exclude(org='org.foobar', name='artifact-one')
+  ],
+)
+
+signed_jars(name='project-signed-jars',
+  dependencies=[
+    '3rdparty:org.barfoo.artifact-two',
+    '3rdparty:org.foobar.artifact-one'
+  ],
+  strip_version=True,
+)
+
+target(name='lib',
+  dependencies = [
+    'project/src/main/java:lib'
+  ],
+)
+
+target(name='test',
+  dependencies = [
+    ':lib'
+  ],
+)
+'''
+
+  @contextmanager
+  def _setup_signed_jar_test(self):
+    with temporary_dir() as tmp_dir:
+      os.chdir(tmp_dir)
+      parent_pom_text = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>app</artifactId>
+    <version>HEAD-SNAPSHOT</version>
+    <relativePath>../base/pom.xml</relativePath>
+  </parent>
+
+  <groupId>com.example</groupId>
+  <artifactId>the-parent-pom</artifactId>
+  <version>HEAD-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>com.squareup.maven.plugins</groupId>
+        <artifactId>shade-plugin</artifactId>
+        <version>${shade-plugin.version}</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>shaded</shadedClassifierName>
+              <transformers>
+                <transformer>
+                  <manifestEntries>
+                    <Class-Path>lib-signed/artifact-one.jar lib-signed/artifact-two.jar</Class-Path>
+                  </manifestEntries>
+                </transformer>
+              </transformers>
+              <artifactSet>
+                <excludes>
+                  <exclude>org.foobar:artifact-one</exclude>
+                  <exclude>org.barfoo:artifact-two</exclude>
+                </excludes>
+              </artifactSet>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-dependency-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>copy</id>
+            <phase>package</phase>
+            <goals>
+              <goal>copy-dependencies</goal>
+            </goals>
+            <configuration>
+              <outputDirectory>${project.build.directory}/lib-signed</outputDirectory>
+              <includeArtifactIds>artifact-one,artifact-two</includeArtifactIds>
+              <stripVersion>true</stripVersion>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+'''
+      parent_pom_text = parent_pom_text.strip()
+
+      project_pom_text = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>the-parent-pom</artifactId>
+    <version>HEAD-SNAPSHOT</version>
+    <relativePath>../parents/the-parent/pom.xml</relativePath>
+  </parent>
+
+  <groupId>com.example.project</groupId>
+  <artifactId>project</artifactId>
+  <version>HEAD-SNAPSHOT</version>
+
+  <name>gns-server</name>
+
+  <properties>
+    <project.mainclass>com.example.project.Project</project.mainclass>
+    <deployableBranch>project</deployableBranch>
+  </properties>
+
+  <dependencies>
+  </dependencies>
+</project>
+'''
+      project_pom_text = project_pom_text.strip()
+
+      parent_base_text = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+  <groupId>com.example</groupId>
+  <artifactId>the-parent-pom</artifactId>
+  <version>HEAD-SNAPSHOT</version>
+
+  <dependencyManagement>
+  </dependencyManagement>
+</project>
+'''
+      parent_base_text = parent_base_text.strip()
+
+      root_pom_text = """
+<?xml version="1.0" encoding="UTF-8"?>
+<project>
+
+  <groupId>com.example</groupId>
+  <artifactId>parent</artifactId>
+  <version>HEAD-SNAPSHOT</version>
+
+  <modules>
+    <module>child1</module>
+  </modules>
+</project>
+"""
+      root_pom_text = root_pom_text.strip()
+
+      self.make_file('project/src/main/java/com/example/project/Project.java', '/* nope */')
+      # NOTE(gm): This test probably could be made to work with fewer pom.xml's, this seems
+      # excessive.
+      self.make_file('project/pom.xml', project_pom_text)
+      self.make_file('parents/the-parent/pom.xml', parent_pom_text)
+      self.make_file('parents/base/pom.xml', parent_base_text)
+      self.make_file('pom.xml', root_pom_text)
+      yield tmp_dir
+
+  def test_signed_jars(self):
+    with self._setup_signed_jar_test() as tmp_dir:
+      PomToBuild().convert_pom('project/pom.xml', rootdir=tmp_dir,
+                               generation_context=GenerationContext(print_headers=False))
+      self.assert_file_contents('project/BUILD.gen', self._signed_jar_expected_text)
+
+def smart_dedent(text):
+  """Like dedent, but dedents the first line separately from the rest of the string."""
+  lines = text.split('\n')
+  if len(lines) <= 1:
+    return dedent(text)
+  return '{}\n{}'.format(dedent(lines[0]), dedent('\n'.join(lines[1:])))

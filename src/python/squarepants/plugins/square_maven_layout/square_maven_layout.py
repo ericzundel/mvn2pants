@@ -11,6 +11,7 @@ from pants.backend.codegen.targets.java_protobuf_library import JavaProtobufLibr
 from pants.backend.codegen.targets.java_wire_library import JavaWireLibrary
 from pants.backend.codegen.targets.jaxb_library import JaxbLibrary
 from pants.backend.jvm.targets.jar_library import JarLibrary
+from pants.backend.jvm.targets.unpacked_jars import UnpackedJars
 from pants.backend.maven_layout.maven_layout import maven_layout
 from pants.base.source_root import SourceRoot
 
@@ -39,7 +40,7 @@ def square_maven_layout(parse_context, basedir=''):
   root('src/test/resources', JaxbLibrary)
 
   # Add additional source roots
-  root('src/main/proto', JavaProtobufLibrary, JarLibrary)
-  root('src/test/proto', JavaProtobufLibrary, JarLibrary)
-  root('src/main/wire_proto', JavaWireLibrary, JarLibrary)
-  root('src/test/wire_proto', JavaWireLibrary, JarLibrary)
+  root('src/main/proto', JavaProtobufLibrary, JarLibrary, UnpackedJars)
+  root('src/test/proto', JavaProtobufLibrary, JarLibrary, UnpackedJars)
+  root('src/main/wire_proto', JavaWireLibrary, JarLibrary, UnpackedJars)
+  root('src/test/wire_proto', JavaWireLibrary, JarLibrary, UnpackedJars)

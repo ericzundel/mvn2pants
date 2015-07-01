@@ -4,9 +4,11 @@
 import logging
 import os
 import sys
+from textwrap import dedent
 
 from pom_utils import PomUtils
-
+from target_template import Target
+from pom_file import PomFile
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,10 @@ class ThirdPartyBuildGenerator(object):
         if force_attribute:
           name += "-{0}".format(dep['version'])
         jar_excludes = ""
+        if dep.has_key('classifier'):
+          classifier_part = "\n           classifier='{}',".format(dep['classifier'])
+        else:
+          classifier_part = ''
         if dep.has_key('exclusions'):
           for jar_exclude in dep['exclusions']:
             jar_excludes += ".exclude(org='{groupId}', name='{artifactId}')".format(
@@ -55,15 +61,18 @@ class ThirdPartyBuildGenerator(object):
 
         logger.debug("Adding {artifact} as {name}.".format(artifact=artifact, name=name))
 
-        buf += """
-jar_library(name='{name}',
-    jars=[
-      sjar(org='{groupId}',
-           name='{artifactId}',
-           rev='{version}',{force_attribute}){jar_excludes},
-    ],
-)""".format(name=name, groupId=dep['groupId'], artifactId=dep['artifactId'], version=dep['version'],
-            force_attribute=force_attribute, jar_excludes=jar_excludes)
+        jar = (
+          "sjar(org='{groupId}', name='{artifactId}', rev='{version}',"
+          "{classifier_part}{force_attribute}){jar_excludes}"
+        ).strip().format(groupId=dep['groupId'],
+                         artifactId=dep['artifactId'],
+                         version=dep['version'],
+                         force_attribute=force_attribute,
+                         jar_excludes=jar_excludes,
+                         classifier_part=classifier_part,)
+
+        buf += Target.jar_library.format(name=name, jars=[jar,],
+                                         symbols=PomFile('parents/base/pom.xml').properties)
         _loaded_names.append(name)
         _loaded_artifacts.append(artifact)
     return buf
