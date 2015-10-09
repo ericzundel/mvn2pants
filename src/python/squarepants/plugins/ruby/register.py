@@ -3,13 +3,13 @@
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 from pants.goal.task_registrar import TaskRegistrar as task
-from pants.base.build_file_aliases import BuildFileAliases
+from pants.build_graph.build_file_aliases import BuildFileAliases
 
 from squarepants.plugins.ruby.targets.ruby_specs import RubySpecs
 from squarepants.plugins.ruby.tasks.ruby_specs_run import RubySpecsRun
 
 def build_file_aliases():
-  return BuildFileAliases.create(
+  return BuildFileAliases(
     targets={
       'ruby_specs': RubySpecs,
     }

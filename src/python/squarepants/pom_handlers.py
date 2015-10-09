@@ -264,6 +264,9 @@ class PomHandlerManager(PomContentHandler):
       WireInfo,
       SpecialPropertiesInfo,
       SignedJarInfo,
+      JavaOptionsInfo,
+      JavaHomesInfo,
+      ShadingInfo,
     ]
     self.infos = { info_type: info_type() for info_type in info_types }
     self.handlers = [info.create_content_handler(self) for info in self.infos.values()]
@@ -349,12 +352,13 @@ class WireInfo(GenericPomInfo):
   def __init__(self):
     self.protos = []
     self.roots = []
-    self.service_writer = None
+    self.service_factory = None
     self.no_options = None
     self.enum_options = []
     self.registry_class = None
     self.artifacts = defaultdict(dict)
     self.proto_source_directory = None
+    self.proto_paths = []
 
   def create_content_handler(self, parent):
     return WirePomHandler(parent, self)
@@ -390,8 +394,8 @@ class WirePomHandler(GenericPomHandler):
         self.info.protos.append(self.content.strip())
       elif self.path == ['project', 'build', 'plugins', 'plugin', 'configuration', 'roots', 'root']:
         self.info.roots.append(self.content.strip())
-      elif self.pathEndsWith(['plugin', 'configuration', 'serviceWriter',]):
-        self.info.service_writer = self.content.strip()
+      elif self.pathEndsWith(['plugin', 'configuration', 'serviceFactory',]):
+        self.info.service_factory = self.content.strip()
       elif self.pathEndsWith(['plugin', 'configuration','noOptions',]):
         if self.content.strip() == 'true':
           self.info.no_options = True
@@ -403,6 +407,8 @@ class WirePomHandler(GenericPomHandler):
         self.info.registry_class = self.content.strip()
       elif self.pathEndsWith(['plugin', 'configuration', 'protoSourceDirectory',]):
         self.info.proto_source_directory = self.content.strip()
+      elif self.pathEndsWith(['protoPaths', 'protoPath']):
+        self.info.proto_paths.append(self.content.strip())
 
   @property
   def _unpack_artifact(self):
@@ -425,16 +431,21 @@ class SpecialPropertiesHandler(GenericPomHandler):
     self.info = info
     self._profile_active = False
 
+  def _unified_platform_name(self, name):
+    name = name.lower().strip()
+    platforms = {
+      'darwin': {'darwin', 'mac os x', 'posix'},
+      'linux': {r'^(.*?[^a-z])?linux([^a-z].*)?$'},
+      'windows': {'windows', 'win32'},
+    }
+    for platform, patterns in platforms.items():
+      if any(re.match(pattern, name) for pattern in patterns):
+        return platform
+    logger.warning('Unrecognized platform "{}". pom_handlers.py should be updated.'.format(name))
+    return name
+
   def _same_platform(self, a, b):
-    a, b = a.lower().strip(), b.lower().strip()
-    if a == b: # They are trivially the same platform.
-      return True
-    # Check to see if we fall into some known synonyms.
-    platforms = [
-      {'darwin', 'mac os x', 'posix'},
-      {'win32', 'windows'},
-    ]
-    return any(a in group and b in group for group in platforms)
+    return self._unified_platform_name(a) == self._unified_platform_name(b)
 
   def endElement(self, name):
     if not self.pathStartsWith(['project', 'profiles', 'profile']):
@@ -473,7 +484,8 @@ class SignedJarHandler(GenericPomHandler):
     self._execution_output_dir = None
 
   def endElement(self, name):
-    if self.pathStartsWith(['project', 'build', 'plugins', 'plugin', 'executions']):
+    if self.pathStartsWith(['project', 'build', 'plugins', 'plugin', 'executions']) or \
+      self.pathStartsWith(['project', 'profiles', 'profile', 'build', 'plugins', 'plugin', 'executions']):
       if self._execution_phase == 'package':
         if 'shade' in self._execution_goals:
           if self.path[-2] == 'manifestEntries' and name:
@@ -501,6 +513,206 @@ class SignedJarHandler(GenericPomHandler):
         self._execution_phase = None
         self._execution_goals = set()
         self._execution_output_dir = None
+
+
+class JavaOptionsInfo(GenericPomInfo):
+  """Holds information for special properties, like those only set for particular OS's."""
+  def __init__(self):
+    self.source_level = None
+    self.target_level = None
+    self.compile_args = []
+
+  def create_content_handler(self, parent):
+    return JavaOptionsHandler(parent, self)
+
+
+class JavaOptionsHandler(GenericPomHandler):
+
+  def __init__(self, parent, info):
+    super(JavaOptionsHandler, self).__init__(parent)
+    self.info = info
+    self.pluginGroup = None
+    self.pluginArtifact = None
+    self.pluginVersion = None
+
+  def endElement(self, name):
+    if not self.pathStartsWith(['project', 'build', 'plugins', 'plugin']):
+      return
+    if name == 'groupId':
+      self.pluginGroup = self.content.strip()
+    elif name == 'artifactId':
+      self.pluginArtifact = self.content.strip()
+    elif name == 'version':
+      self.pluginVersion = self.content.strip()
+
+    compiler_plugin = ('org.apache.maven.plugins', 'maven-compiler-plugin')
+    if (self.pluginGroup, self.pluginArtifact) == compiler_plugin:
+      if self.pathEndsWith(['configuration', 'source']):
+        self.info.source_level = self.content.strip()
+      elif self.pathEndsWith(['configuration', 'target']):
+        self.info.target_level = self.content.strip()
+      elif self.pathEndsWith(['configuration', 'compilerArgs', 'arg']):
+        self.info.compile_args.append(self.content.strip())
+
+
+class JavaHomesInfo(GenericPomInfo):
+  """Holds information mapping operating system names to lists of expected java.home directories."""
+  def __init__(self):
+    self._home_map = {}
+
+  @property
+  def home_map(self):
+    homes = {}
+    for os_name, paths in self._home_map.items():
+      # Add java_home paths in order from highest java version to lowest java version, so that the
+      # pants default jvm version ends up being the highest available jvm.
+      homes[os_name] = [java_home for java_name, java_home in reversed(sorted(paths))]
+    return homes
+
+  def create_content_handler(self, parent):
+    return JavaHomesHandler(parent, self)
+
+
+class JavaHomesHandler(GenericPomHandler):
+
+  prefix = ['project', 'profiles', 'profile']
+  path_os = prefix + ['activation', 'os', 'name']
+  java_home_pattern = re.compile(r'^java[0-9]+[.]home$')
+
+  def __init__(self, parent, info):
+    super(JavaHomesHandler, self).__init__(parent)
+    self.info = info
+    self.current_os = None
+
+  def endElement(self, name):
+    if not self.pathStartsWith(self.prefix):
+      return
+
+    if self.path == self.path_os:
+      self.current_os = self.content.strip()
+      self.info._home_map[self.current_os] = set()
+      return
+
+    if self.path[-2] == 'properties':
+      if self.java_home_pattern.match(name):
+        self.info._home_map[self.current_os].add((name, self.content.strip()))
+
+
+class ShadingInfo(GenericPomInfo):
+  """Holds information for generating jvm binary shading rules."""
+
+  class Rule(object):
+
+    package_pattern = re.compile('.*?[.]$')
+    class_pattern = re.compile('.*?[^.]$')
+
+    def __init__(self, from_pattern, to_pattern):
+      self.from_pattern = from_pattern
+      self.to_pattern = to_pattern
+      self.text = None
+      if self.package_pattern.match(from_pattern):
+        from_package = from_pattern[:-1]
+        to_package = to_pattern[:-1]
+        if to_package.endswith(from_package):
+          self.text = "shading_relocate_package('{0}', shade_prefix='{1}')".format(
+            from_package,
+            to_package[:-len(from_package)],
+          )
+        else:
+          self.text = "shading_relocate('{0}**', '{1}@1')".format(
+            from_pattern,
+            to_pattern,
+          )
+      elif self.class_pattern.match(to_pattern):
+        self.text = "shading_relocate('{0}', '{1}')".format(from_pattern, to_pattern)
+      else:
+        logger.warning('Warning: unable to infer pants syntax for shading rule "{0}" -> "{1}".'
+                       .format(from_pattern, to_pattern))
+
+    def __iter__(self):
+      yield self.from_pattern
+      yield self.to_pattern
+
+    def __str__(self):
+      return self.text
+
+    def __hash__(self):
+      return hash(tuple(self))
+
+    def __eq__(self, other):
+      return tuple(self) == tuple(other)
+
+    def __ne__(self, other):
+      return not self.__eq__(other)
+
+  def __init__(self):
+    self.rules = []
+
+  def create_content_handler(self, parent):
+    return ShadingHandler(parent, self)
+
+
+class ShadingHandler(GenericPomHandler):
+
+  path_prefix = ['project', 'build', 'plugins', 'plugin']
+  path_group = path_prefix + ['groupId']
+  path_artifact = path_prefix + ['artifactId']
+  path_goal = path_prefix + ['executions', 'execution', 'goals', 'goal']
+  path_relocate_prefix = path_prefix + ['executions', 'execution', 'configuration', 'relocations',
+                                        'relocation']
+  path_relocate_from = path_relocate_prefix + ['pattern']
+  path_relocate_to = path_relocate_prefix + ['shadedPattern']
+  plugin_id = ('com.squareup.maven.plugins', 'shade-plugin')
+
+  class Plugin(object):
+    def __init__(self):
+      self.group_id = None
+      self.artifact_id = None
+      self.goal = None
+      self.relocate_from = None
+      self.relocate_to = None
+      self.rules = []
+
+  def __init__(self, parent, info):
+    super(ShadingHandler, self).__init__(parent)
+    self.info = info
+    self.plugin = self.Plugin()
+
+  def endElement(self, name):
+    if not self.pathStartsWith(self.path_prefix):
+      return
+
+    if self.path == self.path_prefix:
+      if self.plugin.goal == 'shade':
+        if (self.plugin.group_id, self.plugin.artifact_id) == self.plugin_id:
+          for relocate_from, relocate_to in self.plugin.rules:
+            self.info.rules.append(ShadingInfo.Rule(relocate_from, relocate_to))
+      # End of the plugin block; clear the data.
+      self.plugin = self.Plugin()
+      return
+
+    if self.path == self.path_group:
+      self.plugin.group_id = self.content.strip()
+      return
+
+    if self.path == self.path_artifact:
+      self.plugin.artifact_id = self.content.strip()
+      return
+
+    if self.path == self.path_goal:
+      self.plugin.goal = self.content.strip()
+      return
+
+    if self.path == self.path_relocate_from:
+      self.plugin.relocate_from = self.content.strip()
+      return
+
+    if self.path == self.path_relocate_to:
+      self.plugin.relocate_to = self.content.strip()
+      return
+
+    if self.path == self.path_relocate_prefix:
+      self.plugin.rules.append((self.plugin.relocate_from, self.plugin.relocate_to))
 
 
 class DependencyInfo(object):
@@ -573,15 +785,21 @@ class DependencyInfo(object):
     return self._rootdir
 
   @property
-  def parent(self):
+  def parent_path(self):
     if 'groupId' in self._parent \
         and 'artifactId' in self._parent \
         and 'relativePath' in self._parent:
       relative_parent_pom = self._parent['relativePath']
       if os.path.basename(relative_parent_pom) != 'pom.xml':
         relative_parent_pom = os.path.join(relative_parent_pom, 'pom.xml')
-      parent_path = os.path.normpath(os.path.join(os.path.dirname(self.source_file_name),
+      return os.path.normpath(os.path.join(os.path.dirname(self.source_file_name),
                                                   relative_parent_pom))
+    return None
+
+  @property
+  def parent(self):
+    parent_path = self.parent_path
+    if parent_path:
       parent_df = CachedDependencyInfos().get(parent_path, rootdir=self.root_directory)
       return parent_df
     return None
@@ -697,6 +915,11 @@ class PomProvidesTarget():
                        pom)
 
   def find_artifact(self, query):
+    """Find the pom that defines an artifactId.  Does not assume all artifactIds are unique in the repo.
+
+    :param query: The artifactId of the module to query
+    :return: array of paths to the pom.xml file where the artifact is defined
+    """
     poms = []
     if PomProvidesTarget.artifacts_in_modules.has_key(query):
       poms = PomProvidesTarget.artifacts_in_modules[query]
@@ -704,6 +927,7 @@ class PomProvidesTarget():
 
   def find_target(self, query):
     """looks for groupId.artifactId. There should be only one.
+
     :param string query: target name to find in the list of targets
     :return: list of pom.xml paths that contain the specified target name
     """
@@ -729,6 +953,7 @@ class DepsFromPom():
     self._source_file_name = ""
     self._rootdir=rootdir
     self._pom_provides_target = pom_provides_target
+    self.parent = None
 
   def get(self, source_file_name, raw_deps=False):
     """:param source_file_name: relative path of pom.xml file to analyze
@@ -740,6 +965,7 @@ class DepsFromPom():
     self.group_id = df.groupId
     self.artifact_id = df.artifactId
     self.properties = df.properties
+    self.parent = df.parent
 
     self._source_file_name = source_file_name
     lib_deps, test_deps = [], []
@@ -803,7 +1029,7 @@ class DepsFromPom():
     for dep in deps:
       dep_target = "{groupId}.{artifactId}".format(groupId=dep['groupId'],
                                                    artifactId=dep['artifactId'])
-      if PomUtils.is_third_party_dep(dep_target):
+      if PomUtils.is_third_party_dep(dep_target, rootdir=self._rootdir):
         logger.debug("dep_target {target} is not local".format(target=dep_target))
         pants_refs.append("'3rdparty:{target}'".format(target=dep_target))
 
@@ -811,7 +1037,7 @@ class DepsFromPom():
     for dep in deps:
       dep_target = "{groupId}.{artifactId}".format(groupId=dep['groupId'],
                                                    artifactId=dep['artifactId'])
-      if PomUtils.is_external_dep(dep_target):
+      if PomUtils.is_external_dep(dep_target, rootdir=self._rootdir):
         if not dep.has_key('version'):
           raise Exception(
             "Expected artifact {artifactId} group {groupId} in pom {pom_file} to have a version."
@@ -832,12 +1058,17 @@ class DepsFromPom():
         else:
           type_ = dep.get('type')
 
+        dep_url = dep.get('systemPath')
+        if dep_url:
+          dep_url = 'file://{}'.format(dep_url)
+
         pants_refs.append(Target.jar.format(
           org=dep['groupId'],
           name=dep['artifactId'],
           rev=dep['version'],
           classifier=classifier,
           type_=type_,
+          url=dep_url,
         ) + jar_excludes)
     return pants_refs
 
@@ -894,4 +1125,3 @@ class LocalTargets:
       result.add("{project_root}/src/main/proto:proto".format(project_root=project_root))
     cls._cache[project_root] = result
     return result
-

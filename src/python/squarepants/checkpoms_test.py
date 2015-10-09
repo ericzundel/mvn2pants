@@ -156,8 +156,6 @@ def create_temp_root(to_copy=[]):
     <module>service/exemplar</module>
     <module>service/framework/validation</module>
     <module>service/framework</module>
-    <module>service/testwebsvc/api</module>
-    <module>service/testwebsvc</module>
     <module>squarepants/pants-test-app</module>
   </modules>
 </project>

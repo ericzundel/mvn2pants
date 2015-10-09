@@ -9,23 +9,55 @@
 target(
   name = 'squarepants_test',
   dependencies = [
+    ':artifact_dependency_analysis',
     ':common',
+    ':binary_utils',
     ':build_component',
+    ':file_utils',
     ':generation_utils',
+    ':generate_3rdparty',
+    ':plugins',
     ':pom_handlers',
     ':pom_properties',
     ':pom_to_build',
     ':pom_utils',
     ':target_template',
+    ':pants_integration',
+  ],
+)
+
+target(
+  name = 'plugins',
+  dependencies = [
+    'squarepants/src/test/python/squarepants_test/plugins',
+  ],
+)
+
+python_tests(
+  name = 'artifact_dependency_analysis',
+  sources = ['test_artifact_dependency_analysis.py'],
+  dependencies = [
+    'squarepants/src/main/python/squarepants:generation_utils',
+    'squarepants/src/main/python/squarepants:pom_handlers',
   ]
 )
 
 python_library(
   name = 'common',
-  sources = [ '__init__.py', 'test_utils.py' ],
+  sources = [ '__init__.py', ],
   dependencies = [
     'squarepants/src/main/python/squarepants:pom_handlers',
     'squarepants/src/main/python/squarepants:pom_utils',
+    'squarepants/src/main/python/squarepants:file_utils',
+  ],
+)
+
+python_tests(
+  name = 'binary_utils',
+  sources = [ 'test_binary_utils.py' ],
+  dependencies = [
+    ':common',
+    'squarepants/src/main/python/squarepants:binary_utils',
   ],
 )
 
@@ -35,6 +67,14 @@ python_tests(
   dependencies = [
     ':common',
     'squarepants/src/main/python/squarepants:build_component',
+  ],
+)
+
+python_tests(
+  name = 'file_utils',
+  sources = [ 'test_file_utils.py' ],
+  dependencies = [
+    'squarepants/src/main/python/squarepants:file_utils',
   ],
 )
 
@@ -91,5 +131,22 @@ python_tests(
   dependencies = [
     ':common',
     'squarepants/src/main/python/squarepants:target_template',
+  ],
+)
+
+python_tests(
+  name = 'generate_3rdparty',
+  sources = [ 'test_generate_3rdparty.py' ],
+  dependencies = [
+    ':common',
+    'squarepants/src/main/python/squarepants:generate_3rdparty',
+  ],
+)
+
+python_tests(
+  name = 'pants_integration',
+  sources = [ 'test_pants_integration.py' ],
+  dependencies = [
+    'squarepants/src/main/python/squarepants:binary_utils',
   ],
 )

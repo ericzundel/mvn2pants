@@ -1,22 +1,22 @@
 # Tests for code in squarepants/src/main/python/squarepants/build_component.py
 #
 # Run with:
-# ./pants goal test squarepants/src/test/python/squarepants:build_component
+# ./pants test squarepants/src/test/python/squarepants_test:build_component
 
-from contextlib import contextmanager
 import os
 from textwrap import dedent
 import unittest2 as unittest
 
 from squarepants.build_component import JarFilesMixin
-from squarepants_test.test_utils import temporary_dir, reset_caches
+from squarepants.pom_utils import PomUtils
+
 
 class BuildComponentTest(unittest.TestCase):
 
   def setUp(self):
     self.maxDiff = None
     self._wd = os.getcwd()
-    reset_caches()
+    PomUtils.reset_caches()
 
   def tearDown(self):
     # Restore the working directory

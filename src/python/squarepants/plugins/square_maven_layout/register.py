@@ -9,12 +9,12 @@
 from __future__ import (nested_scopes, generators, division, absolute_import, with_statement,
                         print_function, unicode_literals)
 
-from pants.base.build_file_aliases import BuildFileAliases
+from pants.build_graph.build_file_aliases import BuildFileAliases
 from squarepants.plugins.square_maven_layout.square_maven_layout import square_maven_layout
 
 
 def build_file_aliases():
-  return BuildFileAliases.create(
+  return BuildFileAliases(
     context_aware_object_factories={
      'square_maven_layout': BuildFileAliases.curry_context(square_maven_layout)
     }

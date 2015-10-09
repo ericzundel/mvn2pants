@@ -3,7 +3,7 @@
 # Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 from pants.backend.jvm.targets.jar_dependency import JarDependency
-from pants.base.target import Target
+from pants.build_graph.target import Target
 from pants.base.payload import Payload
 from pants.base.payload_field import JarsField
 

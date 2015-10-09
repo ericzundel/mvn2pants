@@ -11,17 +11,33 @@ target(
     ':target_template',
     ':build_component',
     ':generation_context',
+    ':generate_3rdparty',
+    ':patchy_pants',
   ]
+)
+
+python_library(
+  name='binary_utils',
+  sources = ['binary_utils.py'],
+  dependencies = [
+    ':file_utils',
+  ],
 )
 
 python_library(
   name = 'build_component',
   sources = ['build_component.py'],
   dependencies = [
+    ':file_utils',
     ':pom_handlers',
     ':target_template',
     ':generation_context',
   ],
+)
+
+python_library(
+  name='file_utils',
+  sources = ['file_utils.py'],
 )
 
 python_library(
@@ -34,6 +50,24 @@ python_library(
   name='generation_utils',
   sources = ['generation_utils.py'],
   dependencies = [],
+)
+
+python_library(
+  name='patchy_pants',
+  sources = ['patchy_pants.py'],
+  dependencies = [
+    ':binary_utils',
+  ],
+)
+
+python_library(
+  name = 'pom_file',
+  sources = ['pom_file.py'],
+  dependencies = [
+    ':generation_context',
+    ':pom_handlers',
+    ':pom_utils',
+  ],
 )
 
 python_library(
@@ -77,5 +111,15 @@ python_library(
   sources = ['target_template.py'],
   dependencies = [
     ':generation_utils',
+  ],
+)
+
+python_library(
+  name = 'generate_3rdparty',
+  sources = ['generate_3rdparty.py'],
+  dependencies = [
+    ':pom_file',
+    ':pom_utils',
+    ':target_template',
   ],
 )

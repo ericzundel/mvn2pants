@@ -64,11 +64,13 @@ class Target(object):
         'resources':'list',
         'dependencies':'list',
         'imports':'list',
+        'platform':'string',
       }
 
       self.flags = defaultdict(set)
       self.flags.update({
         'sources': {'collapsible'},
+        'platform':'optional',
       })
 
       self.params = {}
@@ -83,6 +85,11 @@ class Target(object):
           self.params[param] = DEFAULT_TYPES[param]
         else:
           self.params[param] = 'raw'
+
+    def _indent_text(self, text, indent=2):
+      lines = str(text).split('\n')
+      lines = ['{0}{1}'.format(' '*indent, line).rstrip() for line in lines]
+      return '\n'.join(lines)
 
     def _format_item(self, item):
       string_pattern = re.compile(r"^(?P<quote>'?)(?P<content>.*?)(?P=quote)(?P<comma>,?)$")
@@ -118,7 +125,9 @@ class Target(object):
         return '[{}]'.format(items[0])
       if 'sorted' in self.flags[param]:
         items = sorted(items)
-      return '[{}\n  ]'.format(','.join('\n    {}'.format(item) for item in items))
+
+      return '[{}\n  ]'.format(','.join('\n{}'.format(self._indent_text(item, indent=4))
+                                        for item in items))
 
     def _extract(self, param, args):
       value = args.get(param) or ''
@@ -140,7 +149,7 @@ class Target(object):
           return '[]'
         if isinstance(value, str):
           if '(' in value:
-            return value # Hack for globs()
+            return value # Hack for globs() and jar().
           value = [value,]
         return self._format_list(param, value)
       if kind == 'dict':
@@ -244,11 +253,12 @@ class Target(object):
 
 
 Target.annotation_processor = Target.create_template('annotation_processor',
-      ['name', 'sources', 'resources', 'dependencies'],
+      ['name', 'sources', 'resources', 'dependencies', 'platform',],
 '''annotation_processor(name={name},
   sources = {sources},
   resources = {resources},
   dependencies = {dependencies},
+  platform = {platform},
 )''')
 
 Target.dependencies = Target.create_template('dependencies', ['name', 'dependencies',],
@@ -267,55 +277,65 @@ Target.jar_library = Target.create_template('jar_library', ['name', 'jars:list:s
 
 Target.java_library = Target.create_template('java_library', ['name', 'sources', 'resources',
                                                               'dependencies',
-                                                              'groupId', 'artifactId'],
+                                                              'groupId', 'artifactId',
+                                                              'platform',],
 '''java_library(name={name},
   sources = {sources},
   resources = {resources},
   dependencies = {dependencies},
+  platform = {platform},
   provides = artifact(org='{groupId}',
                       name='{artifactId}',
                       repo=square,),  # see squarepants/plugin/repo/register.py
 )''')
 
 Target.java_protobuf_library = Target.create_template('java_protobuf_library',
-      ['name', 'sources', 'dependencies', 'imports',],
+      ['name', 'sources', 'dependencies', 'imports', 'platform'],
 '''java_protobuf_library(name={name},
   sources = {sources},
   imports = {imports},
   dependencies = {dependencies},
+  platform = {platform},
 )''')
 
 Target.java_wire_library = Target.create_template('java_wire_library',
-     ['name', 'sources', 'dependencies', 'roots:list', 'service_writer:string',
-      'enum_options:list:optional',
-      'registry_class:string', 'no_options:raw',],
+     ['name', 'sources', 'dependencies', 'roots:list', 'service_factory:string',
+      'enum_options:list:optional', 'registry_class:string', 'no_options:raw:optional',
+      'platform'],
 '''java_wire_library(name={name},
   sources = {sources},
   dependencies = {dependencies},
   roots = {roots},
-  service_writer = {service_writer},
+  service_factory = {service_factory},
   enum_options = {enum_options},
   no_options = {no_options},
   registry_class = {registry_class},
+  platform = {platform},
 )''')
 
-Target.junit_tests = Target.create_template('junit_tests', ['name', 'sources', 'dependencies',],
+Target.junit_tests = Target.create_template('junit_tests',
+     ['name', 'sources', 'cwd:string', 'dependencies', 'platform', 'tags:list:optional'],
 '''junit_tests(name={name},
-   # TODO: Ideally, sources between :test and :lib should not intersect
+  # TODO: Ideally, sources between :test, :integration-tests  and :lib should not intersect
   sources = {sources},
+  cwd = {cwd},
+  tags = {tags},
   dependencies = {dependencies},
+  platform = {platform},
 )''')
 
 
 Target.jvm_binary = Target.create_template('jvm_binary',
       ['name', 'main:string', 'basename:string', 'dependencies', 'manifest_entries:dict:emptyable',
-       'deploy_excludes:list:optional'],
+       'deploy_excludes:list:optional', 'platform', 'shading_rules:list:optional'],
 '''jvm_binary(name={name},
   main = {main},
   basename= {basename},
   dependencies = {dependencies},
   manifest_entries = square_manifest({manifest_entries}),
   deploy_excludes = {deploy_excludes},
+  platform = {platform},
+  shading_rules = {shading_rules},
 )''')
 
 Target.resources = Target.create_template('resources',
@@ -347,8 +367,22 @@ Target.jar = Target.create_template('jar',
      'type_:string:optional', 'intransitive:raw:optional',],
 '''jar(org={org}, name={name}, rev={rev}, force={force}, mutable={mutable}, ext={ext}, \
 classifier={classifier}, type_={type_}, intransitive={intransitive},
-       url={url},
-       apidocs={apidocs},
-       artifacts={artifacts},
-       excludes={excludes},)
+    url={url},
+    apidocs={apidocs},
+    artifacts={artifacts},
+    excludes={excludes},)
+'''.strip(), blank_lines=False)
+
+Target.sjar = Target.create_template('sjar',
+    ['org:string', 'name:string', 'rev:string', 'force:raw:optional', 'excludes:list:optional',
+     'mutable:raw:optional', 'artifacts:list:optional', 'ext:string:optional',
+     'url:string:optional', 'classifier:string:optional', 'apidocs:string:optional',
+     'type_:string:optional', 'intransitive:raw:optional',],
+'''sjar(org={org}, name={name}, rev={rev}, mutable={mutable}, ext={ext}, \
+classifier={classifier}, type_={type_}, intransitive={intransitive},
+    url={url},
+    force={force},
+    apidocs={apidocs},
+    artifacts={artifacts},
+    excludes={excludes},)
 '''.strip(), blank_lines=False)

@@ -1,7 +1,7 @@
 # Tests for code in squarepants/src/main/python/squarepants/pom_handlers.py
 #
 # Run with:
-# ./pants goal test squarepants/src/test/python/squarepants:pom_handlers
+# ./pants test squarepants/src/test/python/squarepants_test:pom_handlers
 
 import os
 import StringIO
@@ -9,11 +9,12 @@ from textwrap import dedent
 import unittest
 
 from squarepants.pom_properties import PomProperties
-from squarepants_test.test_utils import temporary_dir, reset_caches
+from squarepants.pom_utils import PomUtils
+from squarepants.file_utils import temporary_dir
 
 class TestPomProperties(unittest.TestCase):
   def setUp(self):
-    reset_caches()
+    PomUtils.reset_caches()
 
   def test_safe_property_name(self):
     pp = PomProperties()

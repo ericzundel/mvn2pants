@@ -1,7 +1,7 @@
 # Tests for code in squarepants/src/main/python/squarepants/generation_utils
 #
 # Run with:
-# ./pants goal test squarepants/src/test/python/squarepants:generation_utils
+# ./pants test squarepants/src/test/python/squarepants_test:generation_utils
 
 import os
 from textwrap import dedent
@@ -9,7 +9,9 @@ import unittest2 as unittest
 
 from squarepants.pom_file import PomFile
 from squarepants.generation_utils import GenerationUtils
-from squarepants_test.test_utils import temporary_dir, reset_caches
+from squarepants.pom_utils import PomUtils
+from squarepants.file_utils import temporary_dir
+
 
 class GenerationUtilsTest(unittest.TestCase):
 
@@ -75,7 +77,7 @@ class GenerationUtilsTest(unittest.TestCase):
   def setUp(self):
     self.maxDiff = None
     self._wd = os.getcwd()
-    reset_caches()
+    PomUtils.reset_caches()
 
   def tearDown(self):
     # Restore the working directory

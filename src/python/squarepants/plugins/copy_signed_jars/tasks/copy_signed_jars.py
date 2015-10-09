@@ -1,17 +1,20 @@
 # coding=utf-8
 # Copyright 2015 Square, Inc.
 
+import logging
 import os
-import re
 import shutil
 
 from pants.util.dirutil import safe_mkdir
+from pants.backend.core.tasks.task import Task
 from pants.backend.jvm.targets.jvm_binary import JvmBinary
 from pants.backend.jvm.targets.jar_library import JarLibrary
-from pants.backend.core.tasks.task import Task
-
+from pants.backend.jvm.tasks.classpath_products import ArtifactClasspathEntry
 
 from squarepants.plugins.copy_signed_jars.targets.signed_jars import SignedJars
+
+
+logger = logging.getLogger(__name__)
 
 
 class CopySignedJars(Task):
@@ -20,7 +23,7 @@ class CopySignedJars(Task):
   @staticmethod
   def prepare(self, round_manager):
     # This task must run after the ivy resolver
-    round_manager.require_data('ivy_jar_products')
+    round_manager.require_data('compile_classpath')
 
   def execute(self):
     """Copies the jar files to the destination specified by the jvm_binary."""
@@ -30,19 +33,9 @@ class CopySignedJars(Task):
     for target in signed_jars_targets:
       self.copy_signed_jars(target)
 
-
-  def _get_ivy_info(self):
-    ivy_jar_products = self.context.products.get_data('ivy_jar_products') or {}
-    # This product is a list for historical reasons (exclusives groups) but in practice should
-    # have either 0 or 1 entries.
-    ivy_info_list = ivy_jar_products.get('default')
-    if ivy_info_list:
-      return ivy_info_list[0]
-    return None
-
   def copy_signed_jars(self, signed_jars_target):
     # Find the jvm_binaries that depend on this target
-    ivy_info = self._get_ivy_info()
+    compile_classpath = self.context.products.get_data('compile_classpath') or {}
 
     found_binary_targets = set()
     def find_binary_targets(target):
@@ -65,52 +58,43 @@ class CopySignedJars(Task):
           jar_libraries.add(t)
       signed_jars_target.walk(get_java_deps)
 
-      for jar_library in jar_libraries:
-        artifacts = ivy_info.get_artifacts_for_jar_library(jar_library)
-        for artifact in artifacts:
-          self.context.log.info('Copying {jar} for {target}'
-                                .format(jar=artifact.path,
-                                        target=binary_target.address.spec))
-          self._copy_jar_file(binary_target, artifact, signed_jars_target.strip_version)
+      entries = compile_classpath.get_classpath_entries_for_targets(jar_libraries)
+      for conf, classpath_entry in entries:
+        if conf != 'default':
+          continue
+        if not isinstance(classpath_entry, ArtifactClasspathEntry):
+          logger.warn('Skipping {}, not an artifact (got type {})'.format(
+            classpath_entry.path, type(classpath_entry)))
+          continue
+        jar_path = classpath_entry.path
+        coordinate = classpath_entry.coordinate
+        self.context.log.info('Copying {jar} for {target}'
+                              .format(jar=jar_path,
+                                      target=binary_target.address.spec))
+        self._copy_jar_file(binary_target, jar_path, coordinate, signed_jars_target.strip_version)
 
 
-  def _copy_jar_file(self, binary_target, artifact, strip_version):
+  def _copy_jar_file(self, binary_target, jar_path, coordinate, strip_version):
     """Copies the artifact into the signed-jar directory.
 
     Creates the directory if it does not exist.
 
     :param JvmBinary binary_target: binary that references the signed_jars target
-    :param IvyArtifact artifact: the artifact definition that is the source
+    :param str jar_path: the artifact definition that is the source for the copy
+    :param M2Coordinate coordinate: key used to look up this jar
     :param bool strip_version: whether to strip the version of the jar file.
     :returns: path to the jar file to copy
     """
     dest_dir = os.path.join(self.get_options().pants_distdir,
                             '{}-signed-jars'.format(binary_target.basename))
     safe_mkdir(dest_dir)
-    dest_name = os.path.basename(artifact.path)
 
     if strip_version:
-      # Rediscover the (org, name, rev) of the jar, so we can strip it out.
-      # This is a little hacky; I'm not sure if there's a better way to do it.
-
-      # We can assume jar_info exists, because otherwise this method would never have
-      # been called.
-      dest_name_template= '{name}.jar'
-      jar_info, = self.context.products.get_data('ivy_jar_products')['default']
-      module_ref = None
-      for ref, modules in jar_info.modules_by_ref.items():
-        if not ref.unversioned or ref.unversioned not in jar_info._artifacts_by_ref:
-          continue
-        if artifact in jar_info._artifacts_by_ref[ref.unversioned]:
-          module_ref = ref
-      if module_ref is not None:
-        org, name, rev = module_ref.org, module_ref.name, module_ref.rev
-        dest_name = dest_name_template.format(org=org, name=name)
-      else:
-        self.context.log.warn('strip_version is set, but could not find (org,name,rev) '
-                              'details for {}.'.format(artifact.path))
+      dest_name = '{name}.jar'.format(name=coordinate.name)
+    else:
+      dest_name = os.path.basename(jar_path)
 
     dest_path = os.path.join(dest_dir, dest_name)
-    shutil.copy(artifact.path, dest_path)
-    self.context.log.debug('  Copied {} -> {}.'.format(artifact.path, dest_path))
+    shutil.copy(jar_path, dest_path)
+    self.context.log.debug('  Copied {} -> {}.'.format(jar_path, dest_path))
 

@@ -1,7 +1,7 @@
 # Tests for code in squarepants/src/main/python/squarepants/target_template.py
 #
 # Run with:
-# ./pants goal test squarepants/src/test/python/squarepants:target_template
+# ./pants test squarepants/src/test/python/squarepants_test:target_template
 
 import unittest2 as unittest
 

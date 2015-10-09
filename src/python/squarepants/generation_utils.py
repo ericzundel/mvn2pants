@@ -46,7 +46,7 @@ class GenerationUtils(object):
   @classmethod
   def symbol_substitution_on_dicts(cls, symbols, dict_list, **kwargs):
     new_dicts = []
-    for old_dict in dict_list:
+    for index, old_dict in enumerate(dict_list):
       new_dict = {}
       for key, value in old_dict.items():
         if isinstance(value, str) or isinstance(value, unicode):

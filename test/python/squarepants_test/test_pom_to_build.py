@@ -1,7 +1,7 @@
 # Tests for code in squarepants/src/main/python/squarepants/pom_to_build.py
 #
 # Run with:
-# ./pants goal test squarepants/src/test/python/squarepants:pom_to_build
+# ./pants test squarepants/src/test/python/squarepants_test:pom_to_build
 
 from contextlib import contextmanager
 import os
@@ -11,7 +11,8 @@ import unittest2 as unittest
 
 from squarepants.pom_to_build import PomToBuild
 from squarepants.generation_context import GenerationContext
-from squarepants_test.test_utils import temporary_dir, reset_caches
+from squarepants.file_utils import temporary_dir, touch
+from squarepants.pom_utils import PomUtils
 
 
 class PomToBuildTest(unittest.TestCase):
@@ -19,7 +20,7 @@ class PomToBuildTest(unittest.TestCase):
   def setUp(self):
     self.maxDiff = None
     self._wd = os.getcwd()
-    reset_caches()
+    PomUtils.reset_caches()
 
   def tearDown(self):
     # Restore the working directory
@@ -270,6 +271,7 @@ class PomToBuildTest(unittest.TestCase):
       self.make_file('child1/src/main/resources/foo.txt', "Foo bar baz.")
       self.make_file('child1/src/test/java/FooTest.java', 'class FooTest { }')
       self.make_file('child1/src/test/proto/foo_test.proto', 'message FooTest_Message {}')
+      self.make_file('child1/src/test/java/FooIT.java', 'class FooIT {}')
       self.make_file('child1/src/test/resources/foo_test.txt', "Testing: Foo bar baz.")
       PomToBuild().convert_pom('child1/pom.xml', rootdir=tmpdir,
                                generation_context=GenerationContext(print_headers=False))
@@ -304,7 +306,7 @@ java_library(name='lib',
     'child1/src/main/resources:resources'
   ],
   dependencies = [
-    'child1/src/main/proto:proto'
+    'child1/src/main/proto'
   ],
   provides = artifact(org='com.example',
                       name='child1',
@@ -332,13 +334,24 @@ resources(name='resources',
       # shouldn't be duplicated like this!
       triple_quote_string = """
 junit_tests(name='test',
-   # TODO: Ideally, sources between :test and :lib should not intersect
-  sources = rglobs('*.java'),
+  # TODO: Ideally, sources between :test, :integration-tests  and :lib should not intersect
+  sources = rglobs('*Test.java'),
+  cwd = 'child1',
   dependencies = [
     ':lib'
   ],
 )
-
+junit_tests(name='integration-tests',
+  # TODO: Ideally, sources between :test, :integration-tests  and :lib should not intersect
+  sources = rglobs('*IT.java'),
+  cwd = 'child1',
+  tags = [
+    'integration'
+  ],
+  dependencies = [
+    ':lib'
+  ],
+)
 java_library(name='lib',
   sources = rglobs('*.java'),
   resources = [
@@ -346,8 +359,8 @@ java_library(name='lib',
   ],
   dependencies = [
     'child1/src/main/java:lib',
-    'child1/src/main/proto:proto',
-    'child1/src/test/proto:proto',
+    'child1/src/main/proto',
+    'child1/src/test/proto',
     'testing-support/src/main/java:lib'
   ],
   provides = artifact(org='com.example',
@@ -361,7 +374,7 @@ java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
   dependencies = [
-    'child1/src/main/proto:proto'
+    'child1/src/main/proto'
   ],
 )
 """
@@ -417,7 +430,7 @@ java_library(name='lib',
     'child1/src/main/resources:resources'
   ],
   dependencies = [
-    'child1/src/main/proto:proto',
+    'child1/src/main/proto',
     'child2/src/main/java:lib'
   ],
   provides = artifact(org='com.example',
@@ -447,13 +460,13 @@ resources(name='resources',
 
       triple_quote_string = """
 junit_tests(name='test',
-   # TODO: Ideally, sources between :test and :lib should not intersect
-  sources = rglobs('*.java'),
+  # TODO: Ideally, sources between :test, :integration-tests  and :lib should not intersect
+  sources = rglobs('*Test.java'),
+  cwd = 'child1',
   dependencies = [
     ':lib'
   ],
 )
-
 java_library(name='lib',
   sources = rglobs('*.java'),
   resources = [
@@ -461,8 +474,8 @@ java_library(name='lib',
   ],
   dependencies = [
     'child1/src/main/java:lib',
-    'child1/src/main/proto:proto',
-    'child1/src/test/proto:proto',
+    'child1/src/main/proto',
+    'child1/src/test/proto',
     'child2/src/main/java:lib',
     'testing-support/src/main/java:lib'
   ],
@@ -477,7 +490,7 @@ java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
   dependencies = [
-    'child1/src/main/proto:proto',
+    'child1/src/main/proto',
     'child2/src/main/java:lib'
   ],
 )
@@ -974,6 +987,220 @@ target(name='test',
       PomToBuild().convert_pom('project/pom.xml', rootdir=tmp_dir,
                                generation_context=GenerationContext(print_headers=False))
       self.assert_file_contents('project/BUILD.gen', self._signed_jar_expected_text)
+
+  @contextmanager
+  def _setup_single_module(self, module_name, module_pom_contents, touch_files=None):
+    with temporary_dir() as tempdir:
+      current_dir = os.path.abspath('.')
+      os.chdir(tempdir)
+
+      self.make_file('pom.xml', dedent('''
+        <?xml version="1.0" encoding="UTF-8"?>
+        <project>
+          <groupId>com.example</groupId>
+          <artifactId>parent</artifactId>
+          <version>HEAD-SNAPSHOT</version>
+
+          <modules>
+            <module>{module_name}</module>
+          </modules>
+        </project>
+      '''.format(module_name=module_name)).strip())
+
+      self.make_file(os.path.join('parents', 'base', 'pom.xml'), dedent('''
+        <?xml version="1.0" encoding="UTF-8"?>
+        <project>
+          <groupId>com.example</groupId>
+          <artifactId>the-parent-pom</artifactId>
+          <version>HEAD-SNAPSHOT</version>
+
+          <dependencyManagement>
+          </dependencyManagement>
+        </project>
+      '''.strip()))
+
+      self.make_file(os.path.join(module_name, 'pom.xml'), dedent('''
+        <?xml version="1.0" encoding="UTF-8"?>
+        <project xmlns="http://maven.apache.org/POM/4.0.0"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+          <modelVersion>4.0.0</modelVersion>
+
+          <parent>
+            <groupId>com.example</groupId>
+            <artifactId>the-parent-pom</artifactId>
+            <version>HEAD-SNAPSHOT</version>
+            <relativePath>../parents/base/pom.xml</relativePath>
+          </parent>
+
+          <groupId>com.example.project</groupId>
+          <artifactId>{module_name}</artifactId>
+          <version>HEAD-SNAPSHOT</version>
+
+          {module_pom_contents}
+        </project>
+      ''').format(module_name=module_name,
+                  module_pom_contents=module_pom_contents).strip())
+
+      for path in (touch_files or ()):
+        touch(path, makedirs=True)
+
+      yield os.path.join(module_name, 'pom.xml')
+
+      os.chdir(current_dir)
+
+  def _shading_pom_contents(self):
+    return smart_dedent('''
+      <properties>
+        <project.mainclass>com.squareup.example.foobar.Main</project.mainclass>
+        <deployableBranch>shading-test</deployableBranch>
+      </properties>
+
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <configuration>
+              <source>1.7</source>
+              <target>1.7</target>
+              <fork>true</fork>
+              <compilerArgs>
+                <arg>-Xbootclasspath:${java7.bootclasspath}</arg>
+                <arg>-Xlint:cast</arg>
+                <arg>-Xlint:deprecation</arg>
+                <arg>-Xlint:empty</arg>
+                <arg>-Xlint:finally</arg>
+              </compilerArgs>
+            </configuration>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <jvm>/path/to/jvm/bin/java</jvm>
+            </configuration>
+          </plugin>
+          <plugin>
+            <groupId>com.squareup.maven.plugins</groupId>
+            <artifactId>shade-plugin</artifactId>
+            <version>${shade-plugin.version}</version>
+            <executions>
+              <execution>
+                <phase>package</phase>
+                <goals>
+                  <goal>shade</goal>
+                </goals>
+                <configuration>
+                  <shadedArtifactAttached>true</shadedArtifactAttached>
+                  <shadedClassifierName>shaded</shadedClassifierName>
+                  <relocations>
+                    <relocation>
+                      <!-- hadoop uses guava 11, but our java repo uses guava 14 -->
+                      <pattern>com.google.common.</pattern>
+                      <shadedPattern>shaded_for_hadoop.com.google.common.</shadedPattern>
+                    </relocation>
+                    <relocation>
+                      <!-- hadoop uses guice 3.x but our java repo uses guice 4.x -->
+                      <pattern>com.google.inject.</pattern>
+                      <shadedPattern>shaded_for_hadoop.com.google.inject.</shadedPattern>
+                    </relocation>
+                    <relocation>
+                      <!-- CDH 4.3.0 uses hsqldb 1.8.0.7, but our java repo uses 2.2.4 -->
+                      <pattern>org.hsqldb.</pattern>
+                      <shadedPattern>shaded_for_hadoop.org.hsqldb.</shadedPattern>
+                    </relocation>
+                    <relocation>
+                      <!-- CDH 4.3.0 uses protobuf 2.4.0a, but our java repo uses 2.4.1.square.1.3 -->
+                      <pattern>com.google.protobuf.</pattern>
+                      <shadedPattern>shaded_for_hadoop.com.google.protobuf.</shadedPattern>
+                    </relocation>
+                  </relocations>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    ''')
+
+  def _shading_rules_expected(self):
+    return dedent('''
+      jvm_binary(name='shading-test',
+        main = 'com.squareup.example.foobar.Main',
+        basename= 'shading-test',
+        dependencies = [
+          ':lib'
+        ],
+        manifest_entries = square_manifest(),
+        platform = '1.7',
+        shading_rules = [
+          shading_relocate_package('com.google.common', shade_prefix='shaded_for_hadoop.'),
+          shading_relocate_package('com.google.inject', shade_prefix='shaded_for_hadoop.'),
+          shading_relocate_package('org.hsqldb', shade_prefix='shaded_for_hadoop.'),
+          shading_relocate_package('com.google.protobuf', shade_prefix='shaded_for_hadoop.')
+        ],
+       )
+
+       target(name='lib')
+
+       target(name='test',
+        dependencies = [
+          ':lib'
+        ],
+       )
+    ''').strip()
+
+  def test_shading_rules(self):
+    with self._setup_single_module('shading-test', self._shading_pom_contents()) as pom:
+      PomToBuild().convert_pom(pom, rootdir=os.path.abspath('.'),
+                               generation_context=GenerationContext(print_headers=False))
+      self.assert_file_contents('{}/BUILD.gen'.format(os.path.dirname(pom)),
+                                self._shading_rules_expected(), ignore_leading_spaces=True)
+
+  def _system_path_module(self):
+    return smart_dedent('''
+        <dependencies>
+          <dependency>
+            <groupId>com.sun</groupId>
+            <artifactId>tools</artifactId>
+            <version>1.8.0_45</version>
+            <scope>system</scope>
+            <systemPath>/Path/To/Java/lib/tools.jar</systemPath>
+          </dependency>
+        </dependencies>
+    ''')
+
+  def _system_path_expected(self):
+    return smart_dedent('''
+      java_library(name='lib',
+       sources = rglobs('*.java'),
+       resources = [],
+       dependencies = [
+         ':jar_files'
+       ],
+       provides = artifact(org='com.example.project',
+                           name='criteriabuilders',
+                           repo=square,),  # see squarepants/plugin/repo/register.py
+      )
+
+      jar_library(name='jar_files',
+       jars = [
+         jar(org='com.example', name='the-parent-pom', rev='HEAD-SNAPSHOT',),
+         jar(org='com.sun', name='tools', rev='1.8.0_45',
+             url='file:///Path/To/Java/lib/tools.jar',)
+       ],
+      )
+    ''')
+
+  def test_system_path(self):
+    with self._setup_single_module('criteriabuilders', self._system_path_module(),
+                                   touch_files=['criteriabuilders/src/main/java/Foo.java']) as pom:
+      PomToBuild().convert_pom(pom, rootdir=os.path.abspath('.'),
+                               generation_context=GenerationContext(print_headers=False))
+      path = os.path.join(os.path.dirname(pom), 'src/main/java/BUILD.gen')
+      self.assert_file_contents(path,
+                                self._system_path_expected(), ignore_leading_spaces=True)
 
 def smart_dedent(text):
   """Like dedent, but dedents the first line separately from the rest of the string."""

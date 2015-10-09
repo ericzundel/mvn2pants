@@ -1,17 +1,18 @@
 # Tests for code in squarepants/src/main/python/squarepants/pom_handlers.py
 #
 # Run with:
-# ./pants goal test squarepants/src/test/python/squarepants:pom_handlers
+# ./pants test squarepants/src/test/python/squarepants_test:pom_handlers
 
 import os
 import pytest
 from textwrap import dedent
 import unittest2 as unittest
 import xml.sax
+import logging
 
 import squarepants.pom_handlers
 from squarepants.pom_utils import PomUtils
-from squarepants_test.test_utils import temporary_dir
+from squarepants.file_utils import temporary_dir
 
 
 ROOT_POM=dedent('''<?xml version="1.0" encoding="UTF-8"?>
@@ -223,6 +224,11 @@ DEPENDENCY_POM=dedent('''<?xml version="1.0" encoding="UTF-8"?>
 
 
 class PomHandlerTest(unittest.TestCase):
+
+  def setUp(self):
+    PomUtils.reset_caches()
+    logging.basicConfig()
+
   def test_pom_content_handler(self):
     handler =  squarepants.pom_handlers.PomContentHandler()
     xml.sax.parseString(ROOT_POM, handler)
@@ -571,6 +577,11 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
         </project>
       '''))
 
+      # TODO(Eric Ayers): Right now, our builds expect a file in <rootdir>/parents/base/pom.xml
+      os.makedirs(os.path.join(tmpdir, 'parents', 'base'))
+      with open(os.path.join(tmpdir, 'parents', 'base', 'pom.xml'), 'w') as dep_mgmt_pom:
+        dep_mgmt_pom.write(DEPENDENCY_MANAGEMENT_POM)
+
       df = squarepants.pom_handlers.DependencyInfo('pom.xml', rootdir=tmpdir)
       self.assertEquals({u'groupId' : 'com.example',
                          u'artifactId' : 'dep1',
@@ -648,7 +659,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
                     </executions>
                     <configuration>
                       <noOptions>true</noOptions>
-                      <serviceWriter>com.squareup.wire.SimpleServiceWriter</serviceWriter>
+                      <serviceFactory>com.squareup.wire.java.SimpleServiceFactory</serviceFactory>
                       <protoFiles>
                         <protoFile>squareup/protobuf/rpc/rpc.proto</protoFile>
                         <protoFile>squareup/sake/wire_format.proto</protoFile>
@@ -668,7 +679,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
       self.assertEquals(['squareup/protobuf/rpc/rpc.proto', 'squareup/sake/wire_format.proto'], wf.protos)
       self.assertEquals(['squareup.franklin.settings.UnlinkSmsRequest', 'squareup.franklin.settings.VerifyEmailRequest'], wf.roots)
       self.assertEquals([], wf.enum_options)
-      self.assertEquals('com.squareup.wire.SimpleServiceWriter', wf.service_writer)
+      self.assertEquals('com.squareup.wire.java.SimpleServiceFactory', wf.service_factory)
       self.assertEquals(None, wf.registry_class)
       self.assertEquals(set([('com.squareup.protos', 'all-protos',), ('com.google.protobuf', 'protobuf-java',),]), set(wf.artifacts))
       self.assertEquals('**/descriptor.proto', wf.artifacts[('com.google.protobuf', 'protobuf-java',)]['includes'])
@@ -687,3 +698,17 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
   def test_local_targets(self):
     # TODO(zundel): Not implemented
     raise Exception()
+
+  def test_parse_shading_rules(self):
+    def assert_rule_text(expected, from_pattern, to_pattern):
+      received = squarepants.pom_handlers.ShadingInfo.Rule(from_pattern, to_pattern).text
+      self.assertEquals(expected, received)
+
+    assert_rule_text("shading_relocate_package('com.foobar.example', shade_prefix='potato.')",
+                     'com.foobar.example.', 'potato.com.foobar.example.')
+
+    assert_rule_text("shading_relocate('com.foobar.example.**', 'org.faabor.elpmaxe.@1')",
+                     'com.foobar.example.', 'org.faabor.elpmaxe.')
+
+    assert_rule_text("shading_relocate('com.foo.bar.Main', 'org.bar.foo.Sane')",
+                     'com.foo.bar.Main', 'org.bar.foo.Sane')

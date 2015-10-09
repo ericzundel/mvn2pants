@@ -1,7 +1,7 @@
 # Tests for code in squarepants/src/main/python/squarepants/pom_utils.py
 #
 # Run with:
-# ./pants goal test squarepants/src/test/python/squarepants:pom_utils
+# ./pants test squarepants/src/test/python/squarepants_test:pom_utils
 
 import logging
 import unittest2 as unittest

@@ -1,0 +1,7 @@
+#!/bin/bash
+#
+# Unconditionally rebuilds all the BUILD files in the repo.  Typically takes about 3 seconds.
+#
+BASE_DIR=$(dirname $0)/../..
+SCRIPT_DIR="${BASE_DIR}/squarepants/src/main/python/squarepants"
+${SCRIPT_DIR}/regenerate_all.py "$@"
