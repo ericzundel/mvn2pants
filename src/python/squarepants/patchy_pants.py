@@ -212,7 +212,7 @@ class Releaser(object):
   def _test_exemplar(self, pants_git, java_dir, release_name):
     logger.info('\nTesting on exemplar:\n')
     env = os.environ.copy()
-    env['PANTS_VERSION'] = release_name
+    env['SQPANTS_VERSION'] = release_name
     if 'PANTS_DEV' in env:
       env.pop('PANTS_DEV')
     env['PANTS_SRC'] = pants_git.cwd

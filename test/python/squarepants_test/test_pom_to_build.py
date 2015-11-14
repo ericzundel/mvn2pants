@@ -320,6 +320,10 @@ java_protobuf_library(name='proto',
   imports = [],
   dependencies = [],
 )
+wire_proto_path(name='path',
+  sources=rglobs('*.proto'),
+  dependencies=[],
+)
 """
       self.assert_file_contents('child1/src/main/proto/BUILD.gen', triple_quote_string)
       triple_quote_string = """
@@ -375,6 +379,13 @@ java_protobuf_library(name='proto',
   imports = [],
   dependencies = [
     'child1/src/main/proto'
+  ],
+)
+
+wire_proto_path(name='path',
+  sources=rglobs('*.proto'),
+  dependencies=[
+    'child1/src/main/proto:path'
   ],
 )
 """
@@ -448,6 +459,10 @@ java_protobuf_library(name='proto',
     'child2/src/main/java:lib'
   ],
 )
+wire_proto_path(name='path',
+  sources=rglobs('*.proto'),
+  dependencies=[],
+)
 """
       self.assert_file_contents('child1/src/main/proto/BUILD.gen', triple_quote_string)
       triple_quote_string = """
@@ -463,6 +478,17 @@ junit_tests(name='test',
   # TODO: Ideally, sources between :test, :integration-tests  and :lib should not intersect
   sources = rglobs('*Test.java'),
   cwd = 'child1',
+  dependencies = [
+    ':lib'
+  ],
+)
+junit_tests(name='integration-tests',
+  # TODO: Ideally, sources between :test, :integration-tests  and :lib should not intersect
+  sources = rglobs('*IT.java'),
+  cwd = 'child1',
+  tags = [
+    'integration'
+  ],
   dependencies = [
     ':lib'
   ],
@@ -492,6 +518,13 @@ java_protobuf_library(name='proto',
   dependencies = [
     'child1/src/main/proto',
     'child2/src/main/java:lib'
+  ],
+)
+
+wire_proto_path(name='path',
+  sources=rglobs('*.proto'),
+  dependencies=[
+    'child1/src/main/proto:path'
   ],
 )
 """
@@ -591,8 +624,8 @@ java_library(name='lib',
 )
 
 jar_library(name='jar_files',
-  jars = [
-    jar(org='com.example.external', name='foo', rev='1.2.3', classifier='shaded', type_='tar.gz',)
+  jars=[
+    sjar(org='com.example.external', name='foo', rev='1.2.3', classifier='shaded', ext='tar.gz',)
   ],
 )
 """
@@ -603,11 +636,9 @@ jar_library(name='jar_files',
       os.chdir(tmp_dir)
       proto_file = 'project1/src/main/proto/foo.proto'
       java_file = 'project2/src/main/java/Foo.java'
-      wire_file = 'project3/src/main/wire_proto/foo.proto'
       self.make_file(proto_file, '/* proto file */')
       self.make_file(java_file, '/* java file */')
-      self.make_file(wire_file, '/* wire proto file */')
-      projects = ['project1', 'project2', 'project3']
+      projects = ['project1', 'project2']
       self.create_pom_with_modules(tmp_dir, projects)
       for project in projects:
         PomToBuild().convert_pom(os.path.join(project, 'pom.xml'), rootdir=tmp_dir,
@@ -645,25 +676,6 @@ jar_library(name='jar_files',
       """
       self.assert_file_contents('project2/BUILD.gen', triple_quote_string,
                                 ignore_leading_spaces=True)
-      triple_quote_string = """
-        target(name='wire_proto',
-          dependencies = [
-            'project3/src/main/wire_proto:wire_proto'
-          ],
-        )
-        target(name='lib',
-          dependencies = [
-            ':wire_proto'
-          ],
-        )
-        target(name='test',
-          dependencies = [
-            ':lib'
-          ],
-        )
-      """
-      self.assert_file_contents('project3/BUILD.gen', triple_quote_string,
-                                ignore_leading_spaces=True)
 
   def test_jvm_binary_target(self):
     with temporary_dir() as tmp_dir:
@@ -689,6 +701,13 @@ jar_library(name='jar_files',
             ':lib'
           ],
           manifest_entries = square_manifest(),
+        )
+
+        # This target's sole purpose is just to invalidate the cache if loose files (eg app-manifest.yaml)
+        # for the jvm_binary change.
+        fingerprint(name='extra-files',
+          sources = [],
+          dependencies = [],
         )
 
         target(name='lib',
@@ -773,8 +792,8 @@ java_library(name='lib',
 )
 
 jar_library(name='jar_files',
-  jars = [
-    jar(org='com.example', name='foobar-for-my-architecture', rev='for-my-architecture-1234',)
+  jars=[
+    sjar(org='com.example', name='foobar-for-my-architecture', rev='for-my-architecture-1234',)
   ],
 )"""
 
@@ -820,6 +839,13 @@ signed_jars(name='project-signed-jars',
     '3rdparty:org.foobar.artifact-one'
   ],
   strip_version=True,
+)
+
+# This target's sole purpose is just to invalidate the cache if loose files (eg app-manifest.yaml)
+# for the jvm_binary change.
+fingerprint(name='extra-files',
+  sources = [],
+  dependencies = [],
 )
 
 target(name='lib',
@@ -1142,6 +1168,14 @@ target(name='test',
         ],
        )
 
+
+       # This target's sole purpose is just to invalidate the cache if loose files (eg app-manifest.yaml)
+       # for the jvm_binary change.
+       fingerprint(name='extra-files',
+         sources = [],
+         dependencies = [],
+       )
+
        target(name='lib')
 
        target(name='test',
@@ -1185,10 +1219,10 @@ target(name='test',
       )
 
       jar_library(name='jar_files',
-       jars = [
-         jar(org='com.example', name='the-parent-pom', rev='HEAD-SNAPSHOT',),
-         jar(org='com.sun', name='tools', rev='1.8.0_45',
-             url='file:///Path/To/Java/lib/tools.jar',)
+       jars=[
+         sjar(org='com.example', name='the-parent-pom', rev='HEAD-SNAPSHOT',),
+         sjar(org='com.sun', name='tools', rev='1.8.0_45',
+           url='file:///Path/To/Java/lib/tools.jar',)
        ],
       )
     ''')

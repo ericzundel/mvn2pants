@@ -15,10 +15,10 @@ from shutil import rmtree
 
 from pants.backend.core.tasks.task import Task
 from pants.base.exceptions import TaskError
-from pants.base.workunit import WorkUnit
+from pants.base.workunit import WorkUnitLabel
 from pants.util.memo import memoized
 
-from squarepants.plugins.square_depmap.tasks.graph_util import Graph
+from squarepants.graph_util import Graph
 
 
 class SquareDepmap(Task):
@@ -59,7 +59,8 @@ class SquareDepmap(Task):
 
   @contextmanager
   def _work_block(self, *vargs):
-    with self.context.new_workunit(name=' '.join(str(s) for s in vargs), labels=[WorkUnit.TASK]):
+    with self.context.new_workunit(name=' '.join(str(s) for s in vargs),
+                                   labels=[WorkUnitLabel.TASK]):
       before = datetime.datetime.now()
       yield
       after = datetime.datetime.now()

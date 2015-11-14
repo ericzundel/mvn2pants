@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 class CopySignedJars(Task):
   """Copies jar files specified by signed_jars targets to dist/<basename>-signed-jars."""
 
-  @staticmethod
-  def prepare(self, round_manager):
+  @classmethod
+  def prepare(cls, options, round_manager):
     # This task must run after the ivy resolver
     round_manager.require_data('compile_classpath')
 
@@ -53,10 +53,10 @@ class CopySignedJars(Task):
       # Copy the specified jars into the dist directory for the specified binary base.
       jar_libraries = set()
 
-      def get_java_deps(t):
+      def get_jar_library_deps(t):
         if isinstance(t, JarLibrary):
           jar_libraries.add(t)
-      signed_jars_target.walk(get_java_deps)
+      signed_jars_target.walk(get_jar_library_deps)
 
       entries = compile_classpath.get_classpath_entries_for_targets(jar_libraries)
       for conf, classpath_entry in entries:
@@ -97,4 +97,3 @@ class CopySignedJars(Task):
     dest_path = os.path.join(dest_dir, dest_name)
     shutil.copy(jar_path, dest_path)
     self.context.log.debug('  Copied {} -> {}.'.format(jar_path, dest_path))
-

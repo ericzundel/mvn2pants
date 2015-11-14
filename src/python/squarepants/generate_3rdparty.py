@@ -97,6 +97,7 @@ class ThirdPartyBuildGenerator(object):
       jars = [artifact for artifact in artifact_list if artifact.type_ == 'jar']
       logger.debug("Adding {jars} as {name}.".format(jars=', '.join(jar.name for jar in jars),
                                                      name=library_name))
+      # NB(zundel) There is a reason why we don't use Target.jar_library.format() here.  See test_target_template.py
       jar_library = dedent('''
         jar_library(name='{name}',
           jars=[{jars}

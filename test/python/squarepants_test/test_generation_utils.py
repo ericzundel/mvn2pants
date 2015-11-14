@@ -98,3 +98,105 @@ class GenerationUtilsTest(unittest.TestCase):
       self.assertEquals([{'key1' : 'key1-FOO'},
                          {'key2' : 'key2-BAR'}],
                         deps)
+
+  @property
+  def _auto_indent_sample(self):
+    return """
+      jar_library(name='hello',
+      jars=[
+      jar(org='com.squareup', name='foobar', rev='1.0'),
+      jar(org='com.squareup',
+      name='barfoo',
+      rev='0.1'),
+      ],
+      )
+    """
+
+  def test_auto_indent_normal(self):
+    self.assertEquals(dedent('''
+      jar_library(name='hello',
+        jars=[
+          jar(org='com.squareup', name='foobar', rev='1.0'),
+          jar(org='com.squareup',
+            name='barfoo',
+            rev='0.1'),
+        ],
+      )
+    '''), GenerationUtils.autoindent(self._auto_indent_sample, adaptive=False, indent_size=2))
+
+  def test_auto_indent_4(self):
+    self.assertEquals(dedent('''
+      jar_library(name='hello',
+          jars=[
+              jar(org='com.squareup', name='foobar', rev='1.0'),
+              jar(org='com.squareup',
+                  name='barfoo',
+                  rev='0.1'),
+          ],
+      )
+    '''), GenerationUtils.autoindent(self._auto_indent_sample, adaptive=False, indent_size=4))
+
+  def test_auto_indent_adaptive(self):
+    self.assertEquals(dedent('''
+      jar_library(name='hello',
+                  jars=[
+                    jar(org='com.squareup', name='foobar', rev='1.0'),
+                    jar(org='com.squareup',
+                        name='barfoo',
+                        rev='0.1'),
+                  ],
+      )
+    '''), GenerationUtils.autoindent(self._auto_indent_sample, adaptive=True, indent_size=2))
+
+  def test_auto_indent_forced_linebreaks(self):
+    self.assertEquals(dedent('''
+      jar_library(
+        name='hello',
+        jars=[
+          jar(
+            org='com.squareup',
+            name='foobar',
+            rev='1.0'),
+          jar(
+            org='com.squareup',
+            name='barfoo',
+            rev='0.1'),
+        ],
+      )
+    '''), GenerationUtils.autoindent(self._auto_indent_sample, adaptive=False, indent_size=2,
+                                     force_linebreaks_after='([{,'))
+
+  def test_auto_indent_preserve_block_indent(self):
+    raw_block = '\n'.join([
+      '    target(',
+      '      dependencies=[',
+      '    ":one", ":two",',
+      '    ":three"',
+      '    ]',
+      '    )',
+    ])
+    expected_block = '\n'.join([
+      '    target(',
+      '      dependencies=[',
+      '        ":one", ":two",',
+      '        ":three"',
+      '      ]',
+      '    )',
+    ])
+    received = GenerationUtils.autoindent(raw_block)
+    self.assertEquals(expected_block, received,
+                      msg='Expected:\n{}\n\nReceived:\n{}\n'.format(expected_block, received))
+
+  def test_auto_indent_sneaky_strings(self):
+    expected = dedent('''
+      target(
+        "stuff("
+        "more stuff": [
+          "Even more ] stuff",
+          "Testing strings with \\"] sneaky escapes"
+        ]
+      )
+    ''').strip()
+    received = GenerationUtils.autoindent(expected)
+    self.assertEquals(expected, received,
+                      msg='Expected:\n{}\n\nReceived:\n{}\n'.format(expected, received))

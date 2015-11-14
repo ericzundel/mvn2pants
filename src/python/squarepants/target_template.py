@@ -1,5 +1,6 @@
-from collections import defaultdict
 import re
+from collections import defaultdict
+from textwrap import dedent
 
 from generation_utils import GenerationUtils
 
@@ -266,6 +267,16 @@ Target.dependencies = Target.create_template('dependencies', ['name', 'dependenc
   dependencies = {dependencies},
 )''')
 
+Target.fingerprint = Target.create_template('fingerprint', ['name', 'sources', 'dependencies'],
+dedent('''
+  # This target's sole purpose is just to invalidate the cache if loose files (eg app-manifest.yaml)
+  # for the jvm_binary change.
+  fingerprint(name={name},
+    sources = {sources},
+    dependencies = {dependencies},
+  )
+''').strip())
+
 Target.placeholder = Target.create_template('placeholder', ['name',],
 '''target(name={name})
 ''')
@@ -365,8 +376,8 @@ Target.jar = Target.create_template('jar',
      'mutable:raw:optional', 'artifacts:list:optional', 'ext:string:optional',
      'url:string:optional', 'classifier:string:optional', 'apidocs:string:optional',
      'type_:string:optional', 'intransitive:raw:optional',],
-'''jar(org={org}, name={name}, rev={rev}, force={force}, mutable={mutable}, ext={ext}, \
-classifier={classifier}, type_={type_}, intransitive={intransitive},
+'''sjar(org={org}, name={name}, rev={rev}, force={force}, mutable={mutable}, ext={ext}, \
+classifier={classifier}, ext={type_}, intransitive={intransitive},
     url={url},
     apidocs={apidocs},
     artifacts={artifacts},
@@ -379,10 +390,18 @@ Target.sjar = Target.create_template('sjar',
      'url:string:optional', 'classifier:string:optional', 'apidocs:string:optional',
      'type_:string:optional', 'intransitive:raw:optional',],
 '''sjar(org={org}, name={name}, rev={rev}, mutable={mutable}, ext={ext}, \
-classifier={classifier}, type_={type_}, intransitive={intransitive},
+classifier={classifier}, ext={type_}, intransitive={intransitive},
     url={url},
     force={force},
     apidocs={apidocs},
     artifacts={artifacts},
     excludes={excludes},)
 '''.strip(), blank_lines=False)
+
+Target.wire_proto_path = Target.create_template('wire_proto_path',
+    ['name', 'sources', 'dependencies'], dedent('''
+      wire_proto_path(name={name},
+        sources={sources},
+        dependencies={dependencies},
+      )
+    ''').strip())

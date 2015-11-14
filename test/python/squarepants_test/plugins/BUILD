@@ -5,9 +5,10 @@
 
 target(name='plugins',
   dependencies = [
+    ':idea_gen',
+    ':link_resources_jars',
     ':run_compile_prep',
     ':sake_wire_codegen',
-    ':square_depmap',
     ':staging_build',
   ]
 )
@@ -17,6 +18,15 @@ python_requirements('requirements.txt')
 target(name='common',
   dependencies = [
     'squarepants/src/test/python/squarepants_test:common',
+  ],
+)
+
+python_tests(name='link_resources_jars',
+  sources = [ 'test_link_resources_jars.py'],
+  dependencies = [
+      ':common',
+      'squarepants/src/main/python/squarepants/plugins/link_resources_jars',
+      ':pantsbuild.pants.testinfra',
   ],
 )
 
@@ -38,14 +48,6 @@ python_tests(name='run_compile_prep',
   ],
 )
 
-python_tests(name='square_depmap',
-  sources = [ 'test_square_depmap.py' ],
-  dependencies = [
-    ':common',
-    'squarepants/src/main/python/squarepants/plugins/square_depmap',
-  ],
-)
-
 python_tests(name='staging_build',
   sources = [ 'test_staging_build.py' ],
   dependencies = [
@@ -55,3 +57,11 @@ python_tests(name='staging_build',
   ],
 )
 
+python_tests(name='idea_gen',
+  sources = [ 'test_idea_gen.py' ],
+  dependencies = [
+    ':common',
+    'squarepants/src/main/python/squarepants/plugins/square_idea',
+    ':pantsbuild.pants.testinfra',
+  ],
+)

@@ -49,10 +49,11 @@ class JarDependencyWithGlobalExcludes(JarDependency):
   global_excludes = _load_excludes_from_config()
   loaded = False
 
-  def __init__(self, org, name, rev = None, force = False, ext = None, url = None, apidocs = None,
-      type_ = None, classifier = None, excludes = None):
-    super(JarDependencyWithGlobalExcludes, self).__init__(org, name, rev, force, ext, url, apidocs,
-                                                          type_, classifier, excludes=excludes)
+  def __init__(self, org, name, rev=None, force=False, ext=None, url=None, apidocs=None,
+               classifier=None, mutable=None, intransitive=False, excludes=None):
+    super(JarDependencyWithGlobalExcludes, self).__init__(org, name, rev=rev, force=force, ext=ext, url=url, apidocs=apidocs,
+                                                          classifier=classifier, mutable=mutable, intransitive=intransitive,
+                                                          excludes=excludes)
 
     # NB(zundel) Below, note that self.excludes is usually [] and the list of global excludes is a
     # fixed list currently ~25 items in pants.ini

@@ -3,6 +3,7 @@
 # Run with:
 # ./pants test squarepants/src/test/python/squarepants_test:target_template
 
+import pytest
 import unittest2 as unittest
 
 from squarepants.target_template import Target
@@ -11,6 +12,7 @@ from squarepants.target_template import Target
 class TargetTemplateTest(unittest.TestCase):
 
   def setUp(self):
+    self.maxDiff = None
     super(TargetTemplateTest, self).setUp()
 
   def tearDown(self):
@@ -142,3 +144,48 @@ target(name='my foobar', sources=[
       },
     )
     self.assertEquals(triple_quote_string, formatted_target)
+
+  def test_format_list(self):
+    result =  Target.jar_library._format_list(
+      "foo",
+      ["jar(org='com.example',name='a',rev='1',excludes=[exclude(org='bar', name='b'),exclude(org='bar', name='c'),],)"])
+
+    self.assertEquals("""
+[
+    jar(org='com.example',name='a',rev='1',excludes=[exclude(org='bar', name='b'),exclude(org='bar', name='c'),],)
+  ]
+""".strip(), result)
+
+  def test_format_item(self):
+    result =  Target.jar_library._format_item(
+      "jar(org='com.example', name='a', rev='1', excludes=[ exclude(org='bar', name='b'), exclude(org='bar', name='c'),],)")
+
+    self.assertEquals("""
+ jar(org='com.example', name='a', rev='1', excludes=[ exclude(org='bar', name='b'), exclude(org='bar', name='c'),],)
+        """.strip(), result)
+
+  # This test demonstrates a problem when using the format() method with some types of values.
+  # This is why we don't use Target.jar_library.format() in generate_third_party.py
+  @pytest.mark.xfail
+  def test_jar_library(self):
+    jar="""sjar(org='com.example', name='a', rev='0.8.0',
+  excludes=[
+      exclude(org='bar', name='b'),
+      exclude(org='bar', name='c'),
+  ],
+)"""
+    jar_library = Target.jar_library.format(name="foo", jars=[jar,])
+
+    triple_quote_string="""
+jar_library(name='foo',
+  jars = [
+    sjar(org='com.example', name='a', rev='0.8.0',
+      excludes=[
+          exclude(org='bar', name='b'),
+          exclude(org='bar', name='c'),
+      ],
+    )
+  ],
+)
+"""
+    self.assertEquals(triple_quote_string, jar_library)

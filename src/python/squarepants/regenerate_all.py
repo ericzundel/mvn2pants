@@ -12,7 +12,6 @@ from pom_handlers import JavaHomesInfo
 from pom_utils import PomUtils
 from pom_to_build import PomToBuild
 from generate_3rdparty import ThirdPartyBuildGenerator
-from generate_root_build import RootBuildGenerator
 from generate_external_protos import ExternalProtosBuildGenerator
 from generation_context import GenerationContext
 
@@ -109,14 +108,8 @@ class RegenerateAll(object):
     with open('3rdparty/BUILD.gen', 'w') as build_file:
       build_file.write(ThirdPartyBuildGenerator().generate())
 
-  def _regenerate_root(self):
-    logger.debug('Re-generating BUILD.gen')
-    with open('BUILD.gen', 'w') as build_file:
-      build_file.write(RootBuildGenerator().generate())
-
   def execute(self):
     Task('clean_build_gen', self._clean_generated_builds)()
-    Task('regenerate_root', self._regenerate_root)()
     Task('convert_poms', self._convert_poms)()
     Task('regenerate_external_protos', self._regenerate_external_protos)()
     Task('regenerate_3rdparty', self._regenerate_3rdparty)()

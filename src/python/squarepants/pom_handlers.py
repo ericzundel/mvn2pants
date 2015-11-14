@@ -17,7 +17,6 @@ import xml.sax
 from generation_utils import GenerationUtils
 from target_template import Target
 
-
 logger = logging.getLogger(__name__)
 
 def reset_caches():
@@ -786,7 +785,7 @@ class DependencyInfo(object):
 
   @property
   def parent_path(self):
-    if 'groupId' in self._parent \
+    if self._parent and 'groupId' in self._parent \
         and 'artifactId' in self._parent \
         and 'relativePath' in self._parent:
       relative_parent_pom = self._parent['relativePath']
@@ -960,7 +959,7 @@ class DepsFromPom():
     :return: tuple of (list of library deps, list of test refs)
     """
     df = CachedDependencyInfos.get(source_file_name, rootdir=self._rootdir)
-    deps = sorted(df.dependencies)
+    deps = list(df.dependencies)
     self.target = "{groupId}.{artifactId}".format(groupId=df.groupId, artifactId=df.artifactId)
     self.group_id = df.groupId
     self.artifact_id = df.artifactId
@@ -995,14 +994,15 @@ class DepsFromPom():
     targets = LocalTargets.get(project_root)
 
     # order is important in the list below. if java:lib exists, it will depend on the others.
-    # proto:proto and wire_proto:wire_proto will depend on resources if they exist.
-    for suffix in ['java:lib', 'proto:proto', 'wire_proto:wire_proto', 'resources:resources']:
+    # proto:proto will depend on resources if they exist.
+    for suffix in ['java:lib', 'proto:proto', 'resources:resources']:
       tmp = target_prefix + suffix
       if tmp in targets:
         return tmp
     return None
 
   def build_pants_refs(self, deps):
+    # HACK This is horrible but works around a circular dependency.
     from pom_utils import PomUtils
     pants_refs = []
     for dep in deps:
@@ -1044,11 +1044,12 @@ class DepsFromPom():
             .format(artifactId=dep['artifactId'],
                     groupId=dep['groupId'],
                     pom_file=self._source_file_name))
-        jar_excludes = ""
+        jar_excludes = []
         if dep.has_key('exclusions'):
           for jar_exclude in dep['exclusions']:
-            jar_excludes += ".exclude(org='{groupId}', name='{artifactId}')".format(
-              groupId=jar_exclude['groupId'], artifactId=jar_exclude['artifactId'])
+            jar_excludes.append("exclude(org='{groupId}', name='{artifactId}')".format(
+              groupId=jar_exclude['groupId'], artifactId=jar_exclude['artifactId']))
+
         classifier = dep.get('classifier') # Important to use 'get', so we default to None.
         if dep.get('type') == 'test-jar':
           # In our repo, this is special, *or* ivy doesn't translate this correctly.
@@ -1069,7 +1070,8 @@ class DepsFromPom():
           classifier=classifier,
           type_=type_,
           url=dep_url,
-        ) + jar_excludes)
+          excludes=jar_excludes or None,
+        ))
     return pants_refs
 
   def get_property(self, name):
@@ -1090,7 +1092,6 @@ class LocalTargets:
     'src/test/java': ['lib','test'],
     'src/test/proto' : ['proto'],
     'src/test/resources' : ['resources'],
-    'src/main/wire_proto': ['wire_proto'],
     }
 
   @classmethod

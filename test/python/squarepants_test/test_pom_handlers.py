@@ -317,6 +317,7 @@ class PomHandlerTest(unittest.TestCase):
       df = squarepants.pom_handlers.DependencyInfo('pom.xml', rootdir=tmpdir)
       self.assertEquals('com.example', df.groupId)
       self.assertEquals('service', df.artifactId)
+      self.assertEquals('2.3.4', df.properties['jhdf5.version'])
 
       self.assertEquals(4, len(df.dependencies))
       self.assertEquals({u'groupId' : 'com.example',
@@ -600,9 +601,9 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
       deps_from_pom = squarepants.pom_handlers.DepsFromPom(PomUtils.pom_provides_target(),
                                                            rootdir=tmpdir)
       refs = deps_from_pom.build_pants_refs(df.dependencies)
-      self.assertEquals("jar(org='com.example', name='dep1', rev='1.0', type_='foo',)", refs[0])
+      self.assertEquals("sjar(org='com.example', name='dep1', rev='1.0', ext='foo',)", refs[0])
       # type test-jar gets transformed into a 'tests' classifier
-      self.assertEquals("jar(org='com.example', name='dep2', rev='1.2.3', classifier='tests',)", refs[1])
+      self.assertEquals("sjar(org='com.example', name='dep2', rev='1.2.3', classifier='tests',)", refs[1])
       self.assertEquals(2, len(refs))
 
   def test_wire_info(self):
@@ -659,6 +660,7 @@ xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xs
                     </executions>
                     <configuration>
                       <noOptions>true</noOptions>
+                      <serviceFactory>com.squareup.wire.java.SimpleServiceFactory</serviceFactory>
                       <serviceFactory>com.squareup.wire.java.SimpleServiceFactory</serviceFactory>
                       <protoFiles>
                         <protoFile>squareup/protobuf/rpc/rpc.proto</protoFile>

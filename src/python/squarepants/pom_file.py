@@ -1,6 +1,7 @@
 #!/usr/bin/env python2.7
 
 import os
+import sys
 from datetime import datetime
 
 from generation_context import GenerationContext
@@ -11,6 +12,9 @@ from pom_utils import PomUtils
 
 class PomFile(object):
   """Information holder for relevant details of a module's pom.xml."""
+
+  class ParsingError(Exception):
+    """Error parsing pom.xml."""
 
   def __init__(self, pom_file_path, root_directory=None, generation_context=None):
     if generation_context is None:
@@ -44,7 +48,18 @@ class PomFile(object):
   def find(cls, pom_file_path, root_directory=None, generation_context=None):
     key = (pom_file_path, root_directory)
     if not generation_context or key not in generation_context.pom_file_cache:
-      return cls(pom_file_path, root_directory, generation_context)
+      try:
+        return cls(pom_file_path, root_directory, generation_context)
+      except Exception as e:
+        if not os.path.exists(pom_file_path):
+          warning = '\nThis probably occurred because that pom file does not actually exist.'
+        else:
+          warning = '\nThe structure of that pom file is probably illegal or unconventional.'
+        raise cls.ParsingError('Exception trying to parse {path}: {error}\n{warn}'.format(
+          path=pom_file_path,
+          error=str(e),
+          warn=warning,
+        )), None, sys.exc_info()[2]
     return generation_context.pom_file_cache[key]
 
   def _get_parsed_pom_data(self, generation_context):
@@ -71,12 +86,12 @@ class PomFile(object):
     aggregate_lib_deps, aggregate_test_deps = self.deps_from_pom.get(self.path)
     lib_deps, test_deps, lib_jar_deps, test_jar_deps = [], [], [], []
     for dep in aggregate_lib_deps:
-      if dep.find('jar(') != 0:
+      if not (dep.startswith('jar(') or dep.startswith('sjar(')):
         lib_deps.append(dep)
       else:
         lib_jar_deps.append(dep)
     for dep in aggregate_test_deps:
-      if dep.find('jar(') != 0:
+      if not (dep.startswith('jar(') or dep.startswith('sjar(')):
         test_deps.append(dep)
       else:
         test_jar_deps.append(dep)
@@ -99,9 +114,13 @@ class PomFile(object):
   @property
   def parent(self):
     if self.deps_from_pom.parent:
-      return PomFile.find(self.deps_from_pom.parent.source_file_name,
-                          self.deps_from_pom.parent.root_directory,
-                          generation_context=self.context)
+      parent_root = self.deps_from_pom.parent.root_directory
+      parent_path = self.deps_from_pom.parent.source_file_name
+      check_path = os.path.join(parent_root, parent_path) if parent_root else parent_path
+      if not os.path.exists(check_path):
+        raise self.ParsingError('Error parsing {pom}: parent pom does not exist at: {parent}.'
+                                .format(pom=self.path, parent=check_path))
+      return PomFile.find(parent_path, parent_root, generation_context=self.context)
     return None
 
   def _signed_jar_infos(self):

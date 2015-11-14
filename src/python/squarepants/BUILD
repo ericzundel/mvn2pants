@@ -5,6 +5,7 @@
 target(
   name = 'squarepants',
   dependencies = [
+    ':graph_util',
     ':pom_handlers',
     ':pom_to_build',
     ':pom_utils',
@@ -122,4 +123,9 @@ python_library(
     ':pom_utils',
     ':target_template',
   ],
+)
+
+python_library(
+  name = 'graph_util',
+  sources = ['graph_util.py'],
 )

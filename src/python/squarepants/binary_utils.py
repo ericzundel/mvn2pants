@@ -149,7 +149,7 @@ class Command(object):
         out, err = p.communicate()
         if p.returncode == 0:
           return out or True
-        logger.warning('Subprocess error: {}'.format(err))
+        logger.warning('Subprocess error: {}\n{}'.format(err, out))
         return False
       p = Popen(args, cwd=self.cwd, env=self.env)
       p.wait()

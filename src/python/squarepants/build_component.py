@@ -3,11 +3,12 @@
 from abc import ABCMeta, abstractmethod, abstractproperty
 import os
 import re
+from collections import defaultdict, OrderedDict
+from textwrap import dedent
 
 from generation_context import GenerationContext
 from generation_utils import GenerationUtils
 from target_template import Target
-from file_utils import file_pattern_exists_in_subdir
 
 
 class BuildComponent(object):
@@ -29,6 +30,11 @@ class BuildComponent(object):
     """
     self.pom = pom_file
     self.gen_context = generation_context or GenerationContext()
+
+  @property
+  def main_class(self):
+    """Returns the main class property from this module's pom file, or None."""
+    return self.pom.deps_from_pom.get_property('project.mainclass')
 
   @abstractproperty
   def exists(self):
@@ -206,20 +212,29 @@ class JarFilesMixin(object):
     """
     if not jar_deps:
       return ''
-    return Target.jar_library.format(
-      name=target_name,
-      jars=sorted(set(jar_deps)),
-      symbols=pom_file.properties if pom_file else None,
-      file_name=pom_file.path if pom_file else None,
-    )
+
+    # There is a bug in Target.jar_library.format(). See test_target_template.py
+    #return Target.jar_library.format(
+    #  name=target_name,
+    #  jars=sorted(set(jar_deps)),
+    #  symbols=pom_file.properties if pom_file else None,
+    #  file_name=pom_file.path if pom_file else None,
+    #)
+    jar_library = dedent('''
+        jar_library(name='{name}',
+          jars=[{jars}
+          ],
+        )
+      ''').format(name=target_name,
+                  jars=','.join('\n{}{}'.format(' '*4, jar) for jar in sorted(set(jar_deps))))
+    if pom_file:
+      jar_library =  GenerationUtils.symbol_substitution(pom_file.properties,
+                                               jar_library)
+    return GenerationUtils.autoindent(jar_library)
 
 
 class MainClassComponent(BuildComponent):
   """Generates a jvm_binary if the pom.xml specifies a main class."""
-
-  @property
-  def main_class(self):
-    return self.pom.deps_from_pom.get_property('project.mainclass')
 
   @property
   def exists(self):
@@ -243,6 +258,16 @@ class MainClassComponent(BuildComponent):
         self.gen_context.format_spec(name=self.get_project_target_name(signed_jar_target_name))
       )
     manifest_entries = self.pom.manifest_entries or None
+    extra_fingerprint_files = []
+    app_manifest = 'app-manifest.yaml'
+    if os.path.exists(os.path.join(os.path.dirname(self.pom.path), app_manifest)):
+      extra_fingerprint_files.append(app_manifest)
+    fingerprint_target = self.create_project_target(
+      Target.fingerprint,
+      name='extra-files',
+      sources=extra_fingerprint_files,
+      dependencies=None,
+    )
     return self.create_project_target(Target.jvm_binary,
       name=self.pom.default_target_name,
       main=main_class,
@@ -252,7 +277,7 @@ class MainClassComponent(BuildComponent):
       deploy_excludes=deploy_excludes,
       platform=self.get_jvm_platform_name(),
       shading_rules=self.pom.shading_rules or None,
-    ) + signed_jar_target
+    ) + signed_jar_target + fingerprint_target
 
 
 class MainResourcesComponent(SubdirectoryComponent):
@@ -332,15 +357,30 @@ class MainProtobufLibraryComponent(JarFilesMixin, SubdirectoryComponent):
     """Dependencies that get injected into the generated target's dependency list."""
     return self.pom.lib_deps
 
+  @property
+  def _proto_sources(self):
+    return "rglobs('*.proto')"
+
   def generate_target_arguments(self):
     args = super(MainProtobufLibraryComponent, self).generate_target_arguments()
     args.update({
-      'sources': "rglobs('*.proto')",
+      'sources': self._proto_sources,
       'imports': [],
       'dependencies': format_dependency_list(self._deps + [self.jar_target_spec]),
       'platform': self.get_jvm_platform_name(),
     })
     return args
+
+  @property
+  def wire_proto_path_contents(self):
+    return self.format_project(Target.wire_proto_path,
+                               name=self.gen_context.infer_target_name(self.directory, 'path'),
+                               sources=self._proto_sources,
+                               dependencies=format_dependency_list(find_wire_proto_paths(self._deps)))
+
+  def generate_subdirectory_code(self):
+    return super(MainProtobufLibraryComponent, self).generate_subdirectory_code() \
+           + self.wire_proto_path_contents
 
 
 class TestProtobufLibraryComponent(MainProtobufLibraryComponent):
@@ -365,127 +405,6 @@ class TestProtobufLibraryComponent(MainProtobufLibraryComponent):
     args = super(TestProtobufLibraryComponent, self).generate_target_arguments()
     args['platform'] = self.get_jvm_platform_test_name()
     return args
-
-
-class MainWireLibraryComponent(JarFilesMixin, SubdirectoryComponent):
-  """Generates targest for src/main/wire_proto."""
-
-  def __init__(self, *vargs, **kwargs):
-    super(MainWireLibraryComponent, self).__init__(*vargs, **kwargs)
-    wire_info = self.pom.wire_info
-    wire_include_targets = {}
-    wire_include_libraries = []
-    wire_include_patterns = []
-    for artifact in wire_info.artifacts:
-      properties = wire_info.artifacts[artifact]
-      if ('includes' in properties and 'output_directory' in properties
-          and 'wire_proto' in properties['output_directory']):
-        if ',' in properties['includes']:
-          includes = properties['includes'].split(',')
-        else:
-          includes = [ properties['includes'], ]
-        unpack_target_name = 'wire-source-set-{count}'.format(count=len(wire_include_targets)+1)
-        wire_include_libraries.append(
-            "'3rdparty:{group_id}.{artifact_id}'".format(group_id=artifact[0], artifact_id=artifact[1])
-        )
-        wire_include_patterns.extend(["'{}'".format(pattern) for pattern in includes])
-    if wire_include_libraries:
-      wire_include_targets[unpack_target_name] = Target.unpacked_jars.format(
-          name=unpack_target_name,
-          libraries=wire_include_libraries,
-          include_patterns=wire_include_patterns,
-          exclude_patterns=[],
-      )
-    self._wire_include_targets = [self.gen_context.format_spec('', name)
-                                  for name in wire_include_targets.keys()]
-    self._unpacked_jar_contents = '\n'.join(sorted(wire_include_targets.values()))
-
-  @property
-  def subdirectory(self):
-    return 'src/main/wire_proto'
-
-  @property
-  def target_type(self):
-    return Target.java_wire_library
-
-  @property
-  def target_name(self):
-    return 'wire_proto'
-
-  @property
-  def pom_dependency_list(self):
-    return self.pom.lib_deps
-
-  @property
-  def _deps(self):
-    """Dependencies that get injected into the generated target's dependency list."""
-    return self.pom.lib_deps
-
-  @property
-  def _normalized_proto_paths(self):
-    def normalize(path):
-      path = GenerationUtils.symbol_substitution(self.pom.properties, path,
-                                                 symbols_name=self.pom.path)
-      return os.path.normpath(path)
-    return map(normalize, self.pom.wire_info.proto_paths)
-
-  @property
-  def _deps_from_proto_paths(self):
-    proto_paths = self._normalized_proto_paths
-    directory = '{}{}'.format(os.path.normpath(self.directory), os.sep)
-    proto_paths = [path for path in proto_paths
-                   if not '{}{}'.format(path, os.sep).startswith(directory)]
-    for path in proto_paths:
-      if not os.path.exists(path):
-        print('Warning: directory referenced in <protoPath>{}</protoPath> does not exist! '
-              '(referenced by {})'
-              .format(path, self.pom.path))
-    proto_paths = filter(os.path.exists, proto_paths)
-    return proto_paths
-
-  def generate_target_arguments(self):
-    args = super(MainWireLibraryComponent, self).generate_target_arguments()
-    args.update({
-      'sources': self.pom.wire_info.protos or "rglobs('*.proto')",
-      'dependencies': format_dependency_list(self._deps + [self.jar_target_spec]
-                                             + self._wire_include_targets
-                                             + self._deps_from_proto_paths),
-      'roots': self.pom.wire_info.roots,
-      'service_factory': self.pom.wire_info.service_factory,
-      'enum_options': self.pom.wire_info.enum_options,
-      'no_options': self.pom.wire_info.no_options,
-      'registry_class': self.pom.wire_info.registry_class,
-      'platform': self.get_jvm_platform_name(),
-    })
-    return args
-
-  def generate_subdirectory_code(self):
-    return super(MainWireLibraryComponent, self).generate_subdirectory_code() + self._unpacked_jar_contents
-
-
-class TestWireLibraryComponent(MainWireLibraryComponent):
-  """Generates targets for src/test/wire_proto."""
-
-  @property
-  def subdirectory(self):
-    return 'src/test/wire_proto'
-
-  @property
-  def pom_dependency_list(self):
-    return self.pom.test_deps
-
-  @property
-  def _deps(self):
-    return self.pom.lib_deps + self.pom.test_deps
-
-  def generate_project_dependency_code(self):
-    pass
-
-  def generate_target_arguments(self):
-    args = super(TestWireLibraryComponent, self).generate_target_arguments()
-    args['platform'] = self.get_jvm_platform_test_name()
-    return args
-
 
 
 class MainJavaLibraryComponent(JarFilesMixin, SubdirectoryComponent):
@@ -514,9 +433,14 @@ class MainJavaLibraryComponent(JarFilesMixin, SubdirectoryComponent):
 
   def generate_target_arguments(self):
     args = super(MainJavaLibraryComponent, self).generate_target_arguments()
+    library_deps = self._deps + [self.jar_target_spec]
+    module_path = os.path.dirname(self.pom.path)
+    if self.main_class:
+      spec_name = self.gen_context.infer_target_name(module_path, 'extra-files')
+      library_deps.append(self.gen_context.format_spec(path=module_path, name=spec_name))
     args.update({
       'sources': "rglobs('*.java')",
-      'dependencies': format_dependency_list(self._deps + [self.jar_target_spec]),
+      'dependencies': format_dependency_list(library_deps),
       'resources': self.pom.resources,
       'groupId': self.pom.deps_from_pom.group_id,
       'artifactId': self.pom.deps_from_pom.artifact_id,
@@ -564,16 +488,15 @@ class TestJavaLibraryComponent(MainJavaLibraryComponent):
       platform=self.get_jvm_platform_test_name(),
     )
 
-    if file_pattern_exists_in_subdir(self.directory, self.INTEGRATION_TEST_PATTERN):
-      test_target += self.format_project(Target.junit_tests,
-                              name=self.gen_context.infer_target_name(self.directory,
-                                                                      'integration-tests'),
-                              sources="rglobs('*IT.java')",
-                              cwd=self.pom.directory,
-                              tags=['integration'],
-                              dependencies=["':{}'".format(
-                                self.gen_context.infer_target_name(self.directory, 'lib'))],
-                              platform=self.get_jvm_platform_test_name())
+    test_target += self.format_project(Target.junit_tests,
+                            name=self.gen_context.infer_target_name(self.directory,
+                                                                    'integration-tests'),
+                            sources="rglobs('*IT.java')",
+                            cwd=self.pom.directory,
+                            tags=['integration'],
+                            dependencies=["':{}'".format(
+                              self.gen_context.infer_target_name(self.directory, 'lib'))],
+                            platform=self.get_jvm_platform_test_name())
 
     return test_target + super(TestJavaLibraryComponent,
                                self).generate_subdirectory_code()
@@ -593,7 +516,7 @@ class PlaceholderLibraryComponent(BuildComponent):
     return not self.has_project_target('lib')
 
   def generate(self):
-    deps = filter(self.has_project_target, ['proto', 'wire_proto',])
+    deps = filter(self.has_project_target, ['proto',])
     if not deps:
       return self.create_project_target(Target.placeholder, name='lib')
     else:
@@ -619,6 +542,10 @@ class ExternalProtosMixin(object):
     if os.path.exists(subdir) and os.path.isdir(subdir) and os.listdir(subdir):
       return True
     return not self.subdirectory.startswith('src/test/')
+
+  @property
+  def _proto_sources(self):
+    return "from_target(':proto-source-set')"
 
   def _compute_external_protos(self):
     include_patterns = []
@@ -717,6 +644,7 @@ class PlaceholderTestComponent(BuildComponent):
 
 
 VALID_SPEC_PATTERN = re.compile(r'[^:A-Za-z0-9_/.-]')
+WIRE_PROTO_PATH_PATTERN = re.compile(r'^[a-z_]+[(]name[ ]*=[ ]*[\'"]path[\'"]')
 
 def normalize_spec(spec):
   spec = VALID_SPEC_PATTERN.sub('', spec)
@@ -734,18 +662,78 @@ def normalize_spec(spec):
   return spec
 
 
+def split_specs_by_category(specs, categories_pattern):
+  """Splits the list of specs into a map of (category -> specs in that category).
+
+  :param list specs: The list of dependency specs.
+  :param categories_pattern: A compiled regular expression for determining the spec category.
+  :return: A map of (category -> list of specs that match that category.
+  """
+  specs_by_type = defaultdict(list)
+  for spec in specs:
+    specs_by_type[categories_pattern.match(spec).lastgroup].append(spec)
+  return specs_by_type
+
+
 def format_dependency_list(specs):
-  """Sorts a dependency list, putting 'local' dependencies at the end."""
-  specs = set(filter(None, map(normalize_spec, specs)))
-  local_specs = {s for s in specs if s.startswith(':')}
-  global_specs = {s for s in specs if s not in local_specs}
-  used = set()
-  results = []
-  for spec in (sorted(global_specs) + sorted(local_specs)):
-    if spec not in used:
-      results.append(spec)
-      used.add(spec)
+  """Sorts a dependency list, organizing 3rdparty dependencies separately.
+
+  We put 3rdparty dependencies at the top of the dependency list in the order they originally appear
+  in from the pom file they are parsed from. This is an attempt to be consistent in the classpath
+  ordering between Maven and Pants for resolving conflicts when fully-qualified class names collide.
+
+  Other dependency specs are sorted normally.
+
+  :param list specs: List of specs to oragnize and format.
+  :return: Appropriately sorted list of formatted specs.
+  """
+  specs = OrderedDict((spec, True) for spec in filter(None, map(normalize_spec, specs)))
+  specs_by_category = split_specs_by_category(
+    specs,
+    categories_pattern=re.compile(r'(?P<local>^:)|(?P<thirdparty>^3rdparty)|(?P<other>)'),
+  )
+  # Use an OrderedDict instead of an OrderedSet to avoid a dependency on twitter commons.
+  results = (specs_by_category['thirdparty'] + sorted(specs_by_category['local'])
+             + sorted(specs_by_category['other']))
   return ["'{}'".format(spec) for spec in results]
+
+
+def split_spec(spec):
+  """Given a spec, returns a (directory_name, spec_name) tuple.
+
+  The spec is allowed to be in the form 'directory:name', or just the implicit 'directory'.
+  """
+  try:
+    path, name = spec.split(':', 1)
+  except ValueError:
+    path, name = spec, ''
+  return path, name or os.path.basename(path)
+
+
+def get_proto_path_spec_name(directory):
+  """Given a directory, get the name of the wire_proto_path target if present.
+
+  :param directory: The directory to check for wire_proto_path targets in.
+  :return: A tuple in the form (string spec_name, bool target_is_present)
+  """
+  handwritten = os.path.join(directory, 'BUILD')
+  if not os.path.exists(handwritten):
+    return 'path', True
+  with open(handwritten, 'r') as f:
+    for line in f:
+      if WIRE_PROTO_PATH_PATTERN.match(line):
+        return 'path', True
+  return 'aux-path', '/raw-protos/' in directory
+
+
+def find_wire_proto_paths(dependencies):
+  for dep in dependencies:
+    dep = normalize_spec(dep)
+    directory, name = split_spec(dep)
+    if directory.endswith('/proto'):
+      spec_name, spec_found = get_proto_path_spec_name(directory)
+      if spec_found:
+        yield '{directory}:{name}'.format(directory=directory, name=spec_name)
 
 
 # Order matters here. This determines the order that targets and subdirectory BUILD files
@@ -756,10 +744,8 @@ BuildComponent.TYPE_LIST = [
   TestResourcesComponent,
   MainProtobufLibraryComponent,
   MainExternalProtosComponent,
-  MainWireLibraryComponent,
   TestProtobufLibraryComponent,
   TestExternalProtosComponent,
-  TestWireLibraryComponent,
   MainJavaLibraryComponent,
   PlaceholderLibraryComponent,
   TestJavaLibraryComponent,

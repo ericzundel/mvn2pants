@@ -24,25 +24,22 @@ class SakeWireLibrary(ExportableJvmLibrary):
   def __init__(self,
                payload=None,
                roots=None,
-               registry_class=None,
-               enum_options=None,
-               no_options=None,
+               proto_files=None,
                **kwargs):
     """
-    :param list roots: passed through to the --roots option of the Wire compiler
-    :param string registry_class: fully qualified class name of RegistryClass to create. If in
-    doubt, specify com.squareup.wire.SimpleServiceWriter
-    :param list enum_options: list of enums to pass to as the --enum-enum_options option, # optional
-    :param boolean no_options: boolean that determines if --no_options flag is passed
+    :param list roots: Passed through to the --roots option of the Wire compiler
+    :param list proto_files: List of relative proto files to generated code for. If provided, this
+      overrides whatever is specified in `sources`. Unlike `sources`, `proto_files` can include
+      entries that do not exist on the filesystem directly under the BUILD file where this target is
+      specified -- they are just relative filenames that might be located anywhere in this target's
+      proto path.
     """
 
     # NB(zundel): The fields encapsulated this way so they can be properly fingerprinted for caching
     payload = payload or Payload()
     payload.add_fields({
       'roots': PrimitiveField(roots or []),
-      'registry_class': PrimitiveField(registry_class or None),
-      'enum_options': PrimitiveField(enum_options or []),
-      'no_options': PrimitiveField(no_options or False),
+      'proto_files': PrimitiveField(proto_files or []),
     })
 
     # NB(zundel): Perform any other target validation here. Raising TargetDefinitionException

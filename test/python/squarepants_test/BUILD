@@ -16,6 +16,7 @@ target(
     ':file_utils',
     ':generation_utils',
     ':generate_3rdparty',
+    ':graph_util',
     ':plugins',
     ':pom_handlers',
     ':pom_properties',
@@ -66,6 +67,8 @@ python_tests(
   sources = [ 'test_build_component.py' ],
   dependencies = [
     ':common',
+    ':file_utils',
+    'squarepants/src/main/python/squarepants:pom_file',
     'squarepants/src/main/python/squarepants:build_component',
   ],
 )
@@ -85,6 +88,25 @@ python_tests(
     ':common',
     'squarepants/src/main/python/squarepants:generation_utils',
   ],
+)
+
+python_tests(
+  name = 'graph_util',
+  sources = [ 'test_graph_util.py' ],
+  dependencies = [
+    ':common',
+    'squarepants/src/main/python/squarepants:graph_util',
+  ],
+)
+
+python_tests(
+  name = 'pom_file',
+  sources = [ 'test_pom_file.py' ],
+  dependencies = [
+    ':common',
+    ':file_utils',
+    'squarepants/src/main/python/squarepants:pom_file',
+  ]
 )
 
 python_tests(
