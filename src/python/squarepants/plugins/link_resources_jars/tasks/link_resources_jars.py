@@ -7,8 +7,8 @@ import logging
 import os
 import re
 
-from pants.backend.core.targets.resources import Resources
-from pants.backend.core.tasks.task import Task
+from pants.build_graph.resources import Resources
+from pants.task.task import Task
 from pants.backend.jvm.tasks.classpath_products import ClasspathProducts, ArtifactClasspathEntry
 from pants.backend.jvm.tasks.ivy_task_mixin import IvyTaskMixin
 from pants.base.exceptions import TaskError

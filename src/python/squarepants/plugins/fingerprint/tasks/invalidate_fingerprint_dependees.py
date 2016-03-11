@@ -7,12 +7,10 @@ import os
 import re
 import shutil
 
-from pants.backend.core.tasks.task import Task
+from pants.task.task import Task
 from pants.backend.jvm.targets.java_library import JavaLibrary
-from pants.util.dirutil import safe_mkdir
 
 from squarepants.plugins.fingerprint.targets.fingerprint_target import FingerprintTarget
-from squarepants.file_utils import touch
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +34,7 @@ class InvalidateFingerpintDependees(Task):
   def execute(self):
     fingerprints = self.context.targets(lambda t: isinstance(t, FingerprintTarget))
     with self.invalidated(fingerprints,
-                          invalidate_dependents=True,
-                          partition_size_hint=0) as invalidation_check:
+                          invalidate_dependents=True) as invalidation_check:
       addresses = set()
       for vts in invalidation_check.invalid_vts:
         addresses.update(target.address for target in vts.targets)
@@ -51,7 +48,6 @@ class InvalidateFingerpintDependees(Task):
           for versioned_target in valid_vts.targets:
             if versioned_target.address == target.address:
               valid_vts.force_invalidate()
-
               break
         # HACK(gmalmquist): This uses a magic path to figure out where the zinc analysis output is.
         # Unfortunately, there is not a good way (that I can find) to find the incremental compile
@@ -72,11 +68,12 @@ class InvalidateFingerpintDependees(Task):
         # be used to short-circuit the incremental compile, but it may actually be turned
         # on later after this task runs.
 
-        # Paths the analysis files look like this as of 0.0.55
-        # .pants.d/compile/jvm/zinc/squarepants.pants-aop-test-app.src.main.java.lib/52832f7bc075/squarepants.pants-aop-test-app.src.main.java.lib.analysis
+        # Paths the analysis files look like this as of 0.0.64
+        # .pants.d/compile/zinc/squarepants.pants-aop-test-app.src.main.java.lib/52832f7bc075/squarepants.pants-aop-test-app.src.main.java.lib.analysis
+        # .pants.d/compile/zinc/squarepants.pants-aop-test-app.src.main.java.lib/52832f7bc075/squarepants.pants-aop-test-app.src.main.java.lib.analysis.portable
         # HACK(zundel): We used to just remove the analysis file, but that now causes compiles to fail.  I don't know which directory is the right one, remove them all
-        prefix = os.path.join(self.get_options().pants_workdir, 'compile', 'jvm',
-                                             'zinc', target.id, '*')
+        prefix = os.path.join(self.get_options().pants_workdir,
+                              'compile', 'zinc', '*', target.id, '*')
         for sha_dir in glob.glob(prefix):
           dirname = os.path.basename(sha_dir)
           if re.match(r'^[0-9a-f]+$', dirname):
@@ -86,8 +83,8 @@ class InvalidateFingerpintDependees(Task):
               # NB(zundel): if we remove the analysis file it just complains an stops
               shutil.rmtree(sha_dir)
               # NB(zundel): This doesn't work by default. It blows up on an empty analysis file,
-              # BUT, there is an optoin to keep going we can turn on: --clear_invalid_analysis
-              safe_mkdir(sha_dir)
-              empty_analysis_file = os.path.join(sha_dir, "{}.analysis".format(target.id))
-              self.context.log.info("Touching {}".format(empty_analysis_file))
-              touch(empty_analysis_file)
+              # BUT, there is an option to keep going we can turn on: --clear_invalid_analysis
+              #safe_mkdir(sha_dir)
+              #empty_analysis_file = os.path.join(sha_dir, "{}.analysis".format(target.id))
+              #self.context.log.info("Touching {}".format(empty_analysis_file))
+              #touch(empty_analysis_file)

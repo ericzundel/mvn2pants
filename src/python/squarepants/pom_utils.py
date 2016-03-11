@@ -21,7 +21,7 @@ class PomUtils(object):
   """
   _DEPENDENCY_MANAGMENT_FINDER = None
   _LOCAL_DEP_TARGETS = None
-  _THIRD_PARTY_DEP_TARGETS = []
+  _THIRD_PARTY_DEP_TARGETS = {}
   _TOP_POM_CONTENT_HANDLER = None
   _EXTERNAL_PROTOS_POM_CONTENT_HANDLER = None
   _POM_PROVIDES_TARGET = None
@@ -31,7 +31,7 @@ class PomUtils(object):
     """Reset all the singleton instances. Useful for testing."""
     cls._DEPENDENCY_MANAGMENT_FINDER = None
     cls._LOCAL_DEP_TARGETS = None
-    cls._THIRD_PARTY_DEP_TARGETS = []
+    cls._THIRD_PARTY_DEP_TARGETS = {}
     cls._TOP_POM_CONTENT_HANDLER = None
     cls._EXTERNAL_PROTOS_POM_CONTENT_HANDLER = None
     cls._POM_PROVIDES_TARGET = None
@@ -73,11 +73,13 @@ class PomUtils(object):
     """
     if not cls._THIRD_PARTY_DEP_TARGETS:
       dmf = cls.dependency_management_finder(rootdir=rootdir)
-      deps = dmf.find_dependencies("parents/base/pom.xml")
+      deps = dmf.find_dependencies('parents/base/pom.xml')
       for dep in deps:
-        cls._THIRD_PARTY_DEP_TARGETS.append("{groupId}.{artifactId}"
-                                                 .format(groupId=dep['groupId'],
-                                                         artifactId=dep['artifactId']))
+        target_name = '{groupId}.{artifactId}'.format(
+          groupId=dep['groupId'],
+          artifactId=dep['artifactId'],
+        )
+        cls._THIRD_PARTY_DEP_TARGETS[target_name] = dep['version']
     return cls._THIRD_PARTY_DEP_TARGETS
 
   @classmethod

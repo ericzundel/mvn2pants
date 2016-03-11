@@ -6,7 +6,7 @@ import os
 import shutil
 
 from pants.util.dirutil import safe_mkdir
-from pants.backend.core.tasks.task import Task
+from pants.task.task import Task
 from pants.backend.jvm.targets.jvm_binary import JvmBinary
 from pants.backend.jvm.targets.jar_library import JarLibrary
 from pants.backend.jvm.tasks.classpath_products import ArtifactClasspathEntry

@@ -41,7 +41,7 @@ class SakeWireCodegen(JvmToolTaskMixin, SimpleCodegenTask):
     ]
 
     cls.register_jvm_tool(register,
-                          'javadeps',
+                          'wire-runtime',
                           classpath=default_wire_runtime,
                           classpath_spec='//:wire-runtime',
                           help='Runtime dependencies for wire-using Java code.')
@@ -66,7 +66,7 @@ class SakeWireCodegen(JvmToolTaskMixin, SimpleCodegenTask):
     return [cls.IsolatedCodegenStrategy]
 
   def synthetic_target_extra_dependencies(self, target, target_workdir):
-    wire_runtime_deps_spec = self.get_options().javadeps
+    wire_runtime_deps_spec = self.get_options().wire_runtime
     return self.resolve_deps([wire_runtime_deps_spec])
 
 
@@ -99,7 +99,7 @@ class SakeWireCodegen(JvmToolTaskMixin, SimpleCodegenTask):
       # Compute the source path relative to the 'source root' which is the path used at the
       # root of imports
       for source in sources:
-        source_root = context.source_roots.find_by_path(source).path
+        source_root = self.context.source_roots.find_by_path(source).path
         relative_proto_files.add(os.path.relpath(source, source_root))
 
     args = ['--generated-source-directory', target_workdir]
@@ -135,3 +135,8 @@ class SakeWireCodegen(JvmToolTaskMixin, SimpleCodegenTask):
       for proto_source in target.payload.sources.relative_to_buildroot():
         proto_paths.add(self.context.source_roots.find_by_path(proto_source).path)
     return list(proto_paths)
+
+  @property
+  def _copy_target_attributes(self):
+    """Propagate the provides attribute to the synthetic java_library() target for publishing."""
+    return ['provides']

@@ -17,6 +17,7 @@ target(
     ':generation_utils',
     ':generate_3rdparty',
     ':graph_util',
+    ':junit_report',
     ':plugins',
     ':pom_handlers',
     ':pom_properties',
@@ -100,6 +101,15 @@ python_tests(
 )
 
 python_tests(
+  name = 'junit_report',
+  sources = [ 'test_junit_report.py' ],
+  dependencies = [
+    ':common',
+    'squarepants/src/main/python/squarepants:junit_report',
+  ],
+)
+
+python_tests(
   name = 'pom_file',
   sources = [ 'test_pom_file.py' ],
   dependencies = [
@@ -165,10 +175,21 @@ python_tests(
   ],
 )
 
+python_library(
+  name = 'integration_test_base',
+  sources = [ 'integration_test_base.py' ],
+  dependencies = [
+    'squarepants/src/main/python/squarepants:file_utils',
+    'squarepants/src/main/python/squarepants:binary_utils',
+  ],
+)
+
 python_tests(
   name = 'pants_integration',
   sources = [ 'test_pants_integration.py' ],
   dependencies = [
+    ':integration_test_base',
     'squarepants/src/main/python/squarepants:binary_utils',
   ],
+  tags = {'integration'},
 )

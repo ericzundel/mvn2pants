@@ -174,7 +174,7 @@ def run_tests():
   # TODO(zundel) create a canned directory in test to copy files over?  But maybe this is better
   # because it tests the actual contents of our repo.
   to_copy = ('3rdparty', 'squarepants', 'service', 'hoptoad', 'parents',
-    'BUILD', 'BUILD.tools', 'pants', 'pants.ini', 'pants.yaml')
+    'BUILD', 'BUILD.tools', 'pants', 'pants.ini', 'no_pants.yaml')
 
   with create_temp_root(to_copy) as rootdir:
     checkpoms = os.path.join(rootdir, 'squarepants/bin/checkpoms')

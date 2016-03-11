@@ -301,12 +301,15 @@ Target.java_library = Target.create_template('java_library', ['name', 'sources',
 )''')
 
 Target.java_protobuf_library = Target.create_template('java_protobuf_library',
-      ['name', 'sources', 'dependencies', 'imports', 'platform'],
+      ['name', 'sources', 'dependencies', 'imports', 'platform',  'groupId', 'artifactId'],
 '''java_protobuf_library(name={name},
   sources = {sources},
   imports = {imports},
   dependencies = {dependencies},
   platform = {platform},
+  provides = artifact(org='{groupId}',
+                      name='{artifactId}',
+                      repo=square,),  # see squarepants/plugin/repo/register.py
 )''')
 
 Target.java_wire_library = Target.create_template('java_wire_library',
@@ -324,8 +327,21 @@ Target.java_wire_library = Target.create_template('java_wire_library',
   platform = {platform},
 )''')
 
+Target.jvm_prep_command = Target.create_template('jvm_prep_command',
+  ['name', 'mainclass:string', 'goal:string:optional', 'args:list:optional',
+   'jvm_options:list:optional', 'dependencies:list'], dedent('''
+    jvm_prep_command(name={name},
+      goal={goal},
+      mainclass={mainclass},
+      args={args},
+      jvm_options={jvm_options},
+      dependencies={dependencies},
+    )
+  '''))
+
 Target.junit_tests = Target.create_template('junit_tests',
-     ['name', 'sources', 'cwd:string', 'dependencies', 'platform', 'tags:list:optional'],
+     ['name', 'sources', 'cwd:string', 'dependencies', 'platform', 'tags:list:optional',
+      'extra_env_vars:dict:optional', 'extra_jvm_options:list:optional'],
 '''junit_tests(name={name},
   # TODO: Ideally, sources between :test, :integration-tests  and :lib should not intersect
   sources = {sources},
@@ -333,6 +349,8 @@ Target.junit_tests = Target.create_template('junit_tests',
   tags = {tags},
   dependencies = {dependencies},
   platform = {platform},
+  extra_env_vars = {extra_env_vars},
+  extra_jvm_options = {extra_jvm_options},
 )''')
 
 
@@ -350,7 +368,7 @@ Target.jvm_binary = Target.create_template('jvm_binary',
 )''')
 
 Target.resources = Target.create_template('resources',
-      ['name', 'sources', 'dependencies'],
+      ['name', 'sources', 'dependencies:list:optional'],
 '''resources(name={name},
   sources = {sources},
   dependencies = {dependencies},

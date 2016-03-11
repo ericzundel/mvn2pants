@@ -5,7 +5,9 @@
 
 import os
 import pytest
+import re
 import unittest2 as unittest
+from xml.etree import ElementTree
 
 from squarepants.file_utils import temporary_dir, temporary_file
 from squarepants.pom_file import PomFile
@@ -89,3 +91,136 @@ class BuildComponentTest(unittest.TestCase):
 
       self.assertEquals(None, mock_pom_file.parent)
       self.assertEquals('1.2.3', mock_pom_file.properties['foo'])
+
+  def _find_node_text(self, tree, path):
+    prefix = tree.tag[:tree.tag.rfind('}')+1]
+    path = ['{0}{1}'.format(prefix, tag) for tag in path]
+    return tree.find('/'.join(['.'] + path)).text
+
+  def test_inject_schema_exclusion_noop(self):
+    tree = ElementTree.fromstring('''
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<configuration>
+    <generator>
+        <database>
+            <excludes> SCHEMA_VERSION  </excludes>
+        </database>
+    </generator>
+</configuration>'''.strip())
+    PomFile._inject_jooq_schema_exclusion(tree)
+    self.assertEquals(' SCHEMA_VERSION  ',
+                      self._find_node_text(tree, ('generator', 'database', 'excludes')))
+
+  def test_inject_schema_new_tag(self):
+    tree = ElementTree.fromstring('''
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<configuration>
+    <generator>
+        <database>
+        </database>
+    </generator>
+</configuration>'''.strip())
+    PomFile._inject_jooq_schema_exclusion(tree)
+    self.assertEquals('SCHEMA_VERSION',
+                      self._find_node_text(tree, ('generator', 'database', 'excludes')))
+
+  def test_inject_schema_simple(self):
+    tree = ElementTree.fromstring('''
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<configuration>
+    <generator>
+        <database>
+          <excludes>
+          </excludes>
+        </database>
+    </generator>
+</configuration>'''.strip())
+    PomFile._inject_jooq_schema_exclusion(tree)
+    self.assertEquals('SCHEMA_VERSION',
+                      self._find_node_text(tree, ('generator', 'database', 'excludes')))
+
+  def test_inject_schema_concatenate(self):
+    tree = ElementTree.fromstring('''
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<configuration>
+    <generator>
+        <database>
+          <excludes>
+          SOME_TABLE
+          </excludes>
+        </database>
+    </generator>
+</configuration>'''.strip())
+    PomFile._inject_jooq_schema_exclusion(tree)
+    self.assertEquals('SOME_TABLE|SCHEMA_VERSION',
+                      re.sub(r'\s+', '', self._find_node_text(tree, ('generator', 'database',
+                                                                     'excludes'))))
+
+
+  def test_merge_jooq_config(self):
+    tree_one = ElementTree.fromstring('''
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<configuration>
+    <generator>
+        <name>org.jooq.util.DefaultGenerator</name>
+        <generate>
+            <deprecated>false</deprecated>
+        </generate>
+        <target>
+            <directory>squarepants/src/test/java</directory>
+            <packageName>com.squareup.squarepants.integration.jooq.model</packageName>
+        </target>
+        <database>
+            <name>org.jooq.util.mysql.MySQLDatabase</name>
+            <inputSchema>squarepants_jooq_integration_test</inputSchema>
+            <excludes>
+                GOLD_FISH
+            </excludes>
+            <outputSchema>exemplardb</outputSchema>
+            <recordVersionFields>version</recordVersionFields>
+        </database>
+    </generator>
+    <jdbc>
+        <driver>com.mysql.jdbc.Driver</driver>
+        <url>jdbc:mysql://localhost/squarepants_jooq_integration_test</url>
+        <user>root</user>
+        <password />
+    </jdbc>
+</configuration>'''.strip())
+    tree_two = ElementTree.fromstring('''
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<configuration>
+    <generator>
+        <name>replacement generator</name>
+        <target>
+            <packageName>my package</packageName>
+        </target>
+        <database>
+            <name>cool database class</name>
+            <excludes>
+                HELLO_THERE
+            </excludes>
+            <outputSchema>hellodb</outputSchema>
+        </database>
+    </generator>
+    <jdbc>
+        <driver>my driver</driver>
+    </jdbc>
+</configuration>'''.strip())
+    merged = PomFile._merge_jooq_config(tree_one, tree_two)
+    self.assertEquals('replacement generator',
+                      self._find_node_text(merged, ('generator', 'name')))
+    self.assertEquals('my package',
+                      self._find_node_text(merged, ('generator', 'target', 'packageName')))
+    self.assertEquals('squarepants/src/test/java',
+                      self._find_node_text(merged, ('generator', 'target', 'directory')))
+    self.assertEquals('cool database class',
+                      self._find_node_text(merged, ('generator', 'database', 'name')))
+    self.assertEquals('version', self._find_node_text(merged, ('generator', 'database',
+                                                               'recordVersionFields')))
+    self.assertEquals('hellodb',
+                      self._find_node_text(merged, ('generator', 'database', 'outputSchema')))
+    self.assertEquals('my driver',
+                      self._find_node_text(merged, ('jdbc', 'driver')))
+    self.assertEquals('root',
+                      self._find_node_text(merged, ('jdbc', 'user')))

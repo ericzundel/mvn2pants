@@ -5,15 +5,18 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
 
 import os
 import pkgutil
+import re
 import shutil
 import subprocess
 import tempfile
 from hashlib import sha1
 from xml.dom import minidom
 
+from pants.backend.jvm.subsystems.jvm import JVM
 from pants.backend.project_info.tasks.export import ExportTask
 from pants.base.generator import Generator, TemplateData
 from pants.binaries import binary_util
+from pants.option.custom_types import dict_option
 from pants.util.dirutil import safe_mkdir, safe_walk
 from pants.util.memo import memoized_method, memoized_property
 from squarepants.plugins.square_idea.tasks.square_idea_project import IdeaProject
@@ -116,6 +119,26 @@ class SquareIdea(ExportTask):
                   'This makes the external libraries for each module briefer and easier to read '
                   'through, but it may result in undesirable behavior because the order jars '
                   'appear on the classpath may change.')
+    register('--module-pool', default=True, action='store_true',
+             help='Reduce incidence of having to restart IntelliJ due to getting new modules by '
+                  'using a "module pool", which sacrifices readability of the names of modules in '
+                  '.pants.d.')
+    register('--module-pool-size', type=int, default=1000,
+             help='Controls the number of generated placeholder modules.')
+    register('--module-pool-steal-names', default=True, action='store_true',
+             help='Borrow the module name from other modules previously generated in .pants.d if '
+                  'we would otherwise have to create a new module for something in .pants.d. This '
+                  'may create modules with names that are extremely misleading in .pants.d, though '
+                  'it has the benefit of reducing the incidence of requiring the user to restart '
+                  'IntelliJ.')
+    register('--provided-module_dependencies', type=dict_option,
+             help='Mapping of { module_name_prefix p: module_name_prefix } where the scope of '
+                  'the dependency in Module Settings should be marked as "Provided".  The names '
+                  'should match the names of the .iml files.')
+
+  @classmethod
+  def task_subsystems(cls):
+    return super(SquareIdea, cls).task_subsystems() + (JVM,)
 
   def __init__(self, *args, **kwargs):
     super(SquareIdea, self).__init__(*args, **kwargs)
@@ -147,6 +170,7 @@ class SquareIdea(ExportTask):
                                          '{}.ipr'.format(self.project_name))
     self.module_filename = os.path.join(self.gen_project_workdir,
                                         '{}.iml'.format(self.project_name))
+    self.jvm = JVM.scoped_instance(self)
 
   @memoized_property
   def project_dir(self):
@@ -210,23 +234,39 @@ class SquareIdea(ExportTask):
   def _empty_module_data(self):
     return pkgutil.get_data(__name__, self.empty_module_file)
 
-  def execute(self):
+  def _existing_module_files(self):
+    for existing_project_file in os.listdir(os.path.dirname(self.project_filename)):
+      if existing_project_file.endswith('.iml'):
+        yield existing_project_file
+
+  def _create_module_pool(self, existing_modules):
+    if not self.get_options().module_pool:
+      return None
+    module_type_pattern = re.compile(r'^(?P<generic_modules>gen-\d+$)|(?P<specific_modules>\.pants\.d-)')
+    module_types = dict(generic_modules=[], specific_modules=[])
+    for filename in existing_modules:
+      name, _ = os.path.splitext(filename)
+      m = module_type_pattern.match(name)
+      if m:
+        module_types[m.lastgroup].append(name)
+    return IdeaProject.ModulePool(steal_names=self.get_options().module_pool_steal_names,
+                                  **module_types)
+
+  def _create_idea_project(self, outdir, module_pool):
     targets = self.context.targets()
     blob = self.generate_targets_map(targets)
-
-    outdir = os.path.abspath(self.intellij_output_dir)
-    if not os.path.exists(outdir):
-      os.makedirs(outdir)
+    aop_sources_dir = os.path.join(self.get_options().annotation_generated_sources_dir)
+    aop_tests_dir = os.path.join(self.get_options().annotation_generated_test_sources_dir)
 
     annotation_processing = IdeaProject.AnnotationProcessing(
       enabled=self.get_options().annotation_processing_enabled,
-      sources_dir=self.get_options().annotation_generated_sources_dir,
-      test_sources_dir=self.get_options().annotation_generated_test_sources_dir,
+      sources_dir=aop_sources_dir,
+      test_sources_dir=aop_tests_dir,
       processors=self.get_options().annotation_processor,
       codegen_processors=self.get_options().internal_codegen_processor,
     )
 
-    project = IdeaProject(
+    return IdeaProject(
       blob,
       output_directory=outdir,
       workdir=self.gen_project_workdir,
@@ -240,11 +280,12 @@ class SquareIdea(ExportTask):
       pants_workdir=self.get_options().pants_workdir,
       generate_root_module=self.get_options().loose_files,
       prune_libraries=self.get_options().prune_libraries,
+      module_pool=module_pool,
+      debug_port=self.jvm.get_options().debug_port,
+      provided_module_dependencies=self.get_options().provided_module_dependencies,
     )
 
-    configured_modules = project.module_templates_by_filename
-    configured_project = project.project_template
-
+  def _generate_project_file(self, configured_project):
     existing_project_components = None
     if not self.nomerge:
       # Grab the existing components, which may include customized ones.
@@ -253,9 +294,8 @@ class SquareIdea(ExportTask):
     # Generate (without merging in any extra components).
     safe_mkdir(os.path.abspath(self.intellij_output_dir))
 
-    ipr = self._generate_to_tempfile(Generator(pkgutil.get_data(__name__, self.project_template), project=configured_project))
-    imls = [(name, self._generate_to_tempfile(Generator(pkgutil.get_data(__name__, self.module_template), module=module)))
-            for name, module in configured_modules.items()]
+    ipr = self._generate_to_tempfile(Generator(pkgutil.get_data(__name__, self.project_template),
+                                               project=configured_project))
 
     if not self.nomerge:
       # Get the names of the components we generated, and then delete the
@@ -265,13 +305,19 @@ class SquareIdea(ExportTask):
       os.remove(ipr)
 
       # Generate again, with the extra components.
-      ipr = self._generate_to_tempfile(Generator(pkgutil.get_data(__name__, self.project_template),
-                                                 project=configured_project.extend(extra_components=extra_project_components)))
-
+      ipr = self._generate_to_tempfile(
+        Generator(pkgutil.get_data(__name__, self.project_template),
+                  project=configured_project.extend(extra_components=extra_project_components))
+      )
     self.context.log.info('Generated IntelliJ project in {directory}'
                           .format(directory=self.gen_project_workdir))
+    return ipr
 
+  def _generate_module_files(self, configured_modules):
+    return [(name, self._generate_to_tempfile(Generator(pkgutil.get_data(__name__, self.module_template), module=module)))
+            for name, module in configured_modules.items()]
 
+  def _copy_project_files(self, ipr, imls, existing_modules, module_pool):
     project_directory = os.path.dirname(self.project_filename)
     try:
       os.remove(self.project_filename)
@@ -279,11 +325,9 @@ class SquareIdea(ExportTask):
     except OSError:
       previous_project_existed = False
 
-    previous_modules = set()
-    for existing_project_file in os.listdir(project_directory):
-      if existing_project_file.endswith('.iml'):
-        os.remove(os.path.join(project_directory, existing_project_file))
-        previous_modules.add(existing_project_file)
+    previous_modules = existing_modules
+    for existing_project_file in previous_modules:
+      os.remove(os.path.join(project_directory, existing_project_file))
 
     current_modules = set()
     for index, (name, iml) in enumerate(imls):
@@ -296,34 +340,66 @@ class SquareIdea(ExportTask):
     added_modules = current_modules - previous_modules
     removed_modules = previous_modules - current_modules
 
+    placeholder_module_pool_modules = map(IdeaProject.ModulePool.generic_name,
+                                          range(self.get_options().module_pool_size))
+
+    # Add fake modules for the module pool, in case it's turned on in the future.
+    removed_modules.update('{}.iml'.format(i) for i in placeholder_module_pool_modules
+                           if i not in module_pool.assigned_modules())
+
     for name in removed_modules:
       # Make placeholder modules for any removed modules. Placeholders will be generated
       # automatically for projects listed in pom.xml, but not generated modules in .pants.d. This
       # should help alleviate errors that occur if people switch between projects that use different
       # generated sources (since those are the modules that get stuck under .pants.d, and are hard
       # to pre-compute).
-      with open(os.path.join(os.path.dirname(self.module_filename), name), 'w+') as f:
-        f.write(self._empty_module_data)
+      path = os.path.join(os.path.dirname(self.module_filename), name)
+      if not os.path.exists(path):
+        with open(path, 'w+') as f:
+          f.write(self._empty_module_data)
 
     if added_modules and previous_project_existed:
       added_names = sorted(m.rsplit('.', 1)[0] for m in added_modules)
       self.context.log.warn(
         '\nThe set of modules in the java repo has changed:\n{added}\n\n'
-        'This can happen if you pull in generated code (eg by annotation processors or protoc) '
-        'that you have not referenced before in this idea project directory, or if someone adds '
-        'new modules to the root-level pom.xml.\n\n'
+        'This typically happens if new modules are added to the root-level pom.xml.\n\n'
         'You probably will need to restart IntelliJ (or run this command a second time) to '
         'properly load any added modules.\n'.format(
           added=''.join('\nA    {}'.format(m) for m in added_names),
         )
       )
 
+  def _open_project(self):
     if self.open:
       if self.open_with:
         null = open(os.devnull, 'w')
         subprocess.Popen([self.open_with, self.project_filename], stdout=null, stderr=null)
       else:
         binary_util.ui_open(self.project_filename)
+
+  def execute(self):
+    outdir = os.path.abspath(self.intellij_output_dir)
+    if not os.path.exists(outdir):
+      os.makedirs(outdir)
+
+    existing_modules = set(self._existing_module_files())
+    module_pool = self._create_module_pool(existing_modules)
+    project = self._create_idea_project(outdir=outdir, module_pool=module_pool)
+    unbuilt_aop_jars = sorted(jar for jar in project.annotation_processing_jars
+                              if not os.path.exists(jar))
+    if unbuilt_aop_jars:
+      self.context.log.warn(
+        '\nYour project may use code generated by annotation processors that live inside the repo.'
+        '\n\nThis is fine, but be aware that any code generated by these annotation processors will'
+        '\nshow up as red in IntelliJ before you Make a module that uses it (which causes these '
+        'jars to be built).\n{}\n'.format(
+          ''.join('\n  {}'.format(os.path.basename(jar)) for jar in unbuilt_aop_jars)
+        )
+      )
+    ipr = self._generate_project_file(configured_project=project.project_template)
+    imls = self._generate_module_files(configured_modules=project.module_templates_by_filename)
+    self._copy_project_files(ipr, imls, existing_modules, module_pool)
+    self._open_project()
 
   def _generate_to_tempfile(self, generator):
     """Applies the specified generator to a temp file and returns the path to that file.

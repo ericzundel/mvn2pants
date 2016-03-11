@@ -13,6 +13,9 @@ target(
     ':build_component',
     ':generation_context',
     ':generate_3rdparty',
+    ':junit_report',
+    ':junit_report_run',
+    ':export_test_data_run',
     ':patchy_pants',
   ]
 )
@@ -51,6 +54,36 @@ python_library(
   name='generation_utils',
   sources = ['generation_utils.py'],
   dependencies = [],
+)
+
+python_library(
+  name='junit_report',
+  sources = ['junit_report.py'],
+  dependencies = [],
+)
+
+python_binary(
+  name='junit_report_run',
+  entry_point= 'squarepants.junit_report:main',
+  dependencies = [
+    ':junit_report',
+  ],
+)
+
+python_library(
+  name='export_test_data',
+  sources = ['export_test_data.py'],
+  dependencies = [
+    ':junit_report',
+  ],
+)
+
+python_binary(
+  name='export_test_data_run',
+  entry_point= 'squarepants.export_test_data:main',
+  dependencies = [
+    ':export_test_data',
+  ],
 )
 
 python_library(

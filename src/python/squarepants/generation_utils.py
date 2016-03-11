@@ -1,12 +1,24 @@
+import logging
 import re
 from textwrap import dedent
+
+
+logger = logging.getLogger(__name__)
 
 
 class GenerationUtils(object):
   """Static utility methods for BUILD file generation."""
 
+  class MissingSymbolError(Exception):
+    """Exception thrown when a symbol is not defined for substitution."""
+
+    def __init__(self, symbol, dictionary):
+      super(GenerationUtils.MissingSymbolError, self).__init__('Symbol "{}" not found in {}.'
+                                                               .format(symbol, dictionary))
+
   @classmethod
-  def symbol_substitution(cls, symbols, string, max_substitutions=100, symbols_name=None):
+  def symbol_substitution(cls, symbols, string, max_substitutions=100, symbols_name=None,
+                          fail_on_missing=False):
     """Performs symbol substitution on the given string, using symbols dict.
 
     In pseudo-code, does:
@@ -26,6 +38,7 @@ class GenerationUtils(object):
       one or more new symbols, that in turn need to be substituted).
     :param string symbols_name: how to refer to this particular set of symbols if something goes
       wrong.
+    :param bool fail_on_missing: if True, raise an exception when a missing symbol is detected.
     """
     string = str(string)
     pattern = re.compile(r'[$][{]([^{}]*?)[}]')
@@ -36,7 +49,10 @@ class GenerationUtils(object):
       matched_name = match.group(1)
       if matched_name not in symbols:
         if symbols_name:
-          print('  Warning: property "{}" not found in {}.'.format(matched_name, symbols_name))
+          if fail_on_missing:
+            raise cls.MissingSymbolError(matched_name, symbols_name)
+          logger.warn('  Warning: property "{}" not found in {}.'
+                      .format(matched_name, symbols_name))
         break
       string = '{}{}{}'.format(
         string[:match.start()],

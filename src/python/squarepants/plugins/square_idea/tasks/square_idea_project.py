@@ -12,9 +12,11 @@ from xml.etree import ElementTree
 from twitter.common.collections import OrderedSet
 
 from pants.base.build_environment import get_buildroot
+from pants.base.exceptions import TaskError
 from pants.base.generator import Generator, TemplateData
 from pants.base.revision import Revision
 from pants.scm.git import Git
+from pants.util.dirutil import safe_mkdir
 from pants.util.memo import memoized_method, memoized_property
 from pants.util.osutil import get_os_name, known_os_names, normalize_os_name, OS_ALIASES
 
@@ -45,19 +47,112 @@ class IdeaProject(object):
     'codegen_processors',
   ])
 
+  annotation_processing_relative_path = '.pants-idea-generated'
+  annotation_processing_relative_to_content_root = True
+
+  class ModulePool(object):
+
+    class NoAvailableModules(TaskError):
+      pass
+
+    @classmethod
+    def generic_name(cls, index):
+      return 'gen-{:0>4d}'.format(index)
+
+    def __init__(self, specific_modules, generic_modules, steal_names=None):
+      self._specific_available_modules = set(specific_modules)
+      self._generic_available_modules = list(reversed(sorted(generic_modules)))
+      self._assigned_modules = set()
+      self._module_mapping = {}
+      self._next_generic_index = 0
+
+      if steal_names is None:
+        steal_names = True
+      self._steal_names = steal_names
+
+    def unassigned_modules(self):
+      unused = set(self._specific_available_modules)
+      unused.update(self._generic_available_modules)
+      return unused
+
+    def assigned_modules(self):
+      return set(self._assigned_modules)
+
+    def _next_generic_name(self):
+      name = None
+      while (name is None or name in self._assigned_modules
+             or name in self._generic_available_modules):
+        name = self.generic_name(self._next_generic_index)
+        self._next_generic_index += 1
+      return name
+
+    def module_for(self, module_name, use_specific=None, create_if_necessary=True):
+      if use_specific is None:
+        use_specific = self._steal_names
+      if module_name in self._module_mapping:
+        # If already assigned, use that.
+        return self._module_mapping[module_name]
+      if module_name in self._specific_available_modules:
+        # If there's an unassigned module that happens to match our name, just use that.
+        self._module_mapping[module_name] = module_name
+        self._specific_available_modules.remove(module_name)
+        self._assigned_modules.add(module_name)
+        return module_name
+      if self._generic_available_modules:
+        # Assign a generic module.
+        generic = self._generic_available_modules.pop()
+        self._module_mapping[module_name] = generic
+        self._assigned_modules.add(generic)
+        return generic
+      if use_specific and self._specific_available_modules:
+        # Fallback on stealing someone else's module name. This creates misleading module names!
+        specific = self._specific_available_modules.pop()
+        self._module_mapping[module_name] = specific
+        self._assigned_modules.add(specific)
+        return specific
+      if create_if_necessary:
+        # Last resort -- create a new module. Will require an IntelliJ restart =(
+        if module_name not in self._assigned_modules:
+          # Make a new module named after ourselves.
+          self._module_mapping[module_name] = module_name
+          self._assigned_modules.add(module_name)
+          return module_name
+        # Looks like our specific name was stolen by someone else.
+        generic = self._next_generic_name()
+        self._module_mapping[module_name] = generic
+        self._assigned_modules.add(generic)
+        return generic
+      raise self.NoAvailableModules('No modules are left in the pool to assign to "{}".'
+                                    .format(module_name))
+
   class Module(object):
     """Represents a module in an IntelliJ project."""
 
     @classmethod
-    def directory_to_name(cls, path):
+    def directory_to_name(cls, path, project=None):
       """Infers a hyphen-delimited module name from a system/directory/path.
 
       :param string path: The filesystem path of the directory.
+      :param project: The IdeaProject which contains this module. If given, this is used to
+        determine the module name in the event that it was remapped by the module pool. The project
+        should always be provided in the normal flow of this task; it is only unspecified in unit
+        testing.
       :return: The string representing the inferred module name.
       """
-      return os.path.relpath(path, get_buildroot()).replace(os.sep, '-')
+      inferred_name = os.path.relpath(path, get_buildroot()).replace(os.sep, '-')
+      if project and inferred_name.startswith(os.path.basename(project.pants_workdir)):
+        return project.module_pool.module_for(inferred_name)
+      return inferred_name
 
     def __init__(self, project, directory, targets, name=None):
+      """
+
+      :param IdeaProject project:
+      :param str directory: directory where the module is defined
+      :param targets: list of targets from the export file to included as dependencies
+      :type: list of dict
+      :param str name: Manually override the module name, otherwise derives the name from directory
+      """
       self.project = project
       self.directory = directory
       self.targets = targets
@@ -66,11 +161,16 @@ class IdeaProject(object):
       self.libraries = defaultdict(OrderedSet)
       self.excludes = set()
       self.annotation_processing_dependencies = set()
-      self.name = name or self.directory_to_name(directory)
+      self.name = name or self.directory_to_name(directory, project)
 
     @memoized_property
     def filename(self):
       return '{}.iml'.format(self.name)
+
+    @property
+    def output_directory(self):
+      return os.path.join(os.path.dirname(self.project.output_directory),
+                          '_out_{}'.format(self.name))
 
     @property
     def jar_path(self):
@@ -85,6 +185,22 @@ class IdeaProject(object):
           real_target = self.project.context.build_graph.get_target_from_spec(target['spec'])
           processors.update(real_target.processors)
       return processors
+
+    def annotation_processing_output(self, source_type):
+      relative_path = IdeaProject.annotation_processing_relative_path
+      if IdeaProject.annotation_processing_relative_to_content_root:
+        path = os.path.join(self.directory, relative_path, source_type)
+      else:
+        path = os.path.join(self.output_directory, 'production', relative_path, source_type)
+      return os.path.normpath(path)
+
+    @property
+    def annotation_processing_sources_dir(self):
+      return self.annotation_processing_output(self.project.annotation_processing.sources_dir)
+
+    @property
+    def annotation_processing_test_sources_dir(self):
+      return self.annotation_processing_output(self.project.annotation_processing.test_sources_dir)
 
     def _transitive_graph_search(self, adjacency_func):
       frontier = list(adjacency_func(self))
@@ -104,6 +220,13 @@ class IdeaProject(object):
 
     def transitive_dependencies(self):
       return self._transitive_graph_search(lambda module: module.dependencies)
+
+    def dependencies_template_data(self):
+      return [TemplateData(
+          name=dep,
+          scope=self.project.get_module_dependency_scope(self.name,
+                                                         self.directory_to_name(dep, self.project)))
+              for dep in sorted(self.dependencies)]
 
   @classmethod
   def root_repo_name(cls):
@@ -261,10 +384,11 @@ class IdeaProject(object):
   def __init__(self, export_json, output_directory, workdir, context, maven_style=True,
                exclude_folders=None, annotation_processing=None, bash=None, java_encoding=None,
                java_maximum_heap_size=None, pants_workdir=None, generate_root_module=None,
-               prune_libraries=False):
+               prune_libraries=False, module_pool=None, debug_port=None, 
+               provided_module_dependencies=None):
     self.blob = export_json
     self.maven_style = maven_style
-    self.global_excludes = exclude_folders or ()
+    self.global_excludes = map(os.path.abspath, exclude_folders or ())
     self.context = context
     self.workdir = workdir
     self.output_directory = output_directory or os.path.abspath('.')
@@ -275,6 +399,10 @@ class IdeaProject(object):
     self.pants_workdir = pants_workdir or '.pants.d'
     self.generate_root_module = generate_root_module
     self.prune_libraries = prune_libraries
+    self.module_pool = module_pool or self.ModulePool((),())
+    self.annotation_processing_jars = set()
+    self.debug_port = debug_port
+    self.provided_module_dependencies = provided_module_dependencies or {}
     self._setup_modules()
 
   def _setup_modules(self):
@@ -285,16 +413,19 @@ class IdeaProject(object):
     loaded_module_names = {m.name for m in self.modules}
     self.modules.extend(self._create_synthetic_annotation_processing_modules())
     self.placeholder_modules = {module for module in self.load_all_module_directories()
-                                if self.Module.directory_to_name(module) not in loaded_module_names}
+                                if self.Module.directory_to_name(module, self) not in loaded_module_names}
     for module_dir in self.placeholder_modules:
       self.modules.append(self.Module(self, module_dir, set()))
+    self.placeholder_modules.update(name for name in self.module_pool.unassigned_modules())
+    for module_dir in self.module_pool.unassigned_modules():
+      self.modules.append(self.Module(self, '.pants.d/_fake', set(), name=module_dir))
     self._compute_module_dependencies()
     self.all_module_directories = {os.path.relpath(module.directory) for module in self.modules}
     self._check_for_direct_cycles()
     self._simplify_module_dependency_graph(self.modules, self.modules_by_name, self.prune_libraries)
 
   @memoized_method
-  def _maven_excludes(self, path):
+  def _maven_excludes(self, path, recurse_up=True, recurse_down=True):
     """We need to exclude the maven-generated 'target/' directories.
 
     These directories may be found alongside any pom.xml, and cause problems for pants and intellij
@@ -302,17 +433,23 @@ class IdeaProject(object):
 
     :param string path: A directory where we should check for pom.xml's and target directories. This
       method recursively traverses up the path's parent directories looking for targets.
+    :param bool recurse_up: Whether to recursively check for target/ excludes in parent directories.
+    :param bool recurse_down: Whether to check for target/ excludes in the file tree below path/.
     :return: A set of target directories to exclude.
     """
     excludes = set()
     if path and os.path.exists(path):
       if os.path.isdir(path):
         target = os.path.join(path, 'target')
-        if os.path.exists(os.path.join(path, 'pom.xml')) and os.path.exists(target):
-          excludes.add(target)
+        if os.path.exists(os.path.join(path, 'pom.xml')):
+          excludes.add(os.path.abspath(target))
       parent = os.path.dirname(path)
-      if parent != path:
-        excludes.update(self._maven_excludes(parent))
+      if recurse_up and parent != path:
+        excludes.update(self._maven_excludes(parent, recurse_up=True, recurse_down=False))
+      if recurse_down:
+        for (dirpath, dirnames, filenames) in os.walk(path):
+          if 'pom.xml' in filenames:
+            excludes.add(os.path.abspath(os.path.join(dirpath, 'target')))
     return excludes
 
   def _check_for_direct_cycles(self):
@@ -434,6 +571,7 @@ class IdeaProject(object):
         dep = self.modules_by_name[dependency]
         if dep.defined_annotation_processors:
           module.libraries['default'].add(dep.jar_path)
+          self.annotation_processing_jars.add(dep.jar_path)
 
   @memoized_property
   def modules_by_name(self):
@@ -474,30 +612,30 @@ class IdeaProject(object):
 
   @property
   def annotation_processing_template(self):
+    classpath = []
+    if 'libraries' in self.blob:
+      classpath = [lib['default'] for lib in self.blob['libraries'].values() if lib.get('default')]
     return TemplateData(
       enabled=self.annotation_processing.enabled,
-      rel_source_output_dir=os.path.join('..','..','..',
+      # Paths where code generated from annotation processors goes, relative to the content root of
+      # each module.
+      rel_source_output_dir=os.path.join(self.annotation_processing_relative_path,
                                          self.annotation_processing.sources_dir),
-      source_output_dir=
-      os.path.join(self.workdir,
-                   self.annotation_processing.sources_dir),
-      rel_test_source_output_dir=os.path.join('..','..','..',
+      rel_test_source_output_dir=os.path.join(self.annotation_processing_relative_path,
                                               self.annotation_processing.test_sources_dir),
-      test_source_output_dir=
-      os.path.join(self.workdir,
-                   self.annotation_processing.test_sources_dir),
       default_annotation_processor=True,
       processors=[{'class_name' : processor}
                   for processor in self.annotation_processing.processors],
-      classpath=[lib['default'] for lib in self.blob['libraries'].values() if lib.get('default')],
+      classpath=classpath,
       profiles=list(self._generate_annotation_processor_profile_templates()),
+      relative_to_content_root=self.annotation_processing_relative_to_content_root,
     )
 
   @memoized_property
   def project_template(self):
     target_levels = {Revision.lenient(platform['target_level'])
                      for platform in self.blob['jvm_platforms']['platforms'].values()}
-    lang_level = max(target_levels)
+    lang_level = max(target_levels) if target_levels else Revision(1, 8)
 
     configured_project = TemplateData(
       root_dir=get_buildroot(),
@@ -513,15 +651,47 @@ class IdeaProject(object):
       resource_extensions=[],
       scala=None,
       checkstyle_classpath=';'.join([]),
-      debug_port=None,
+      debug_port=self.debug_port,
       annotation_processing=self.annotation_processing_template,
       extra_components=[],
+      junit_tests=self._junit_tests_config(),
+      global_junit_vm_parameters=' '.join(self.global_junit_jvm_options),
     )
     return configured_project
 
   @memoized_property
   def module_templates_by_filename(self):
     return dict(self._generate_module_templates())
+
+  @property
+  def global_junit_jvm_options(self):
+    # NB(gmalmquist): This is a hacky way to get at the [jvm.test.junit] 'options' option.
+    return self.context.options.for_scope('jvm.test.junit').get('options') or ()
+
+  def _junit_tests_config(self):
+    junit_tests = []
+    for module, target in self.modules_and_targets:
+      if target.get('pants_target_type') != 'java_tests':
+        continue
+      # NB(gmalmquist): The export goal doesn't give us enough info about junit tests currently, so
+      # we have to extract the info from the actual target graph.
+      pants_target = self.context.build_graph.get_target_from_spec(target.get('spec'))
+      working_directory = (os.path.abspath(pants_target.cwd) if pants_target.cwd
+                           else module.directory)
+      test_directory = os.path.join(get_buildroot(), pants_target.payload.sources.rel_path)
+
+      jvm_options = OrderedSet(['-ea'])
+      jvm_options.update(pants_target.payload.extra_jvm_options)
+      jvm_options.update(self.global_junit_jvm_options)
+
+      junit_tests.append(TemplateData(
+        module_name=module.name,
+        test_name='All in {}'.format(os.path.relpath(module.directory, get_buildroot())),
+        test_directory=test_directory,
+        working_directory=working_directory,
+        vm_parameters=' '.join(jvm_options),
+      ))
+    return junit_tests
 
   def _generate_annotation_processor_profile_templates(self):
     """Computes data for annotation processing profiles.
@@ -551,8 +721,10 @@ class IdeaProject(object):
           annotated_module =  self.modules_by_name[module_name]
           annotated_module.annotation_processing_dependencies.add(annotation_module)
 
-    all_libraries = {lib['default'] for lib in self.blob['libraries'].values()
-                     if lib.get('default')}
+    all_libraries = set()
+    if 'libraries' in self.blob:
+      all_libraries = {lib['default'] for lib in self.blob['libraries'].values()
+                       if lib.get('default')}
 
     modules_by_profile = defaultdict(set) # Profiles are sets of annotation processors.
     libraries_by_profile = defaultdict(OrderedSet)
@@ -615,19 +787,22 @@ class IdeaProject(object):
 
   def _generate_module_templates(self):
     annotation_processing_code = self._setup_annotation_processing_dependencies()
+    language_level = 'JDK_1_8' # Default.
 
     for module in sorted(self.modules, key=lambda m: m.directory):
       if module.name == annotation_processing_code.name:
         continue
+      module.excludes.update(self._maven_excludes(module.directory))
       sources_by_root = {}
       for target_data in module.targets:
+        language_level = self._java_language_level(target_data)
         for root in target_data['roots']:
           source_root = root['source_root']
           package_prefix = root['package_prefix']
           if not source_root.startswith(module.directory):
             continue
-          module_excludes = self._maven_excludes(os.path.relpath(source_root, get_buildroot()))
-          module.excludes.update(module_excludes)
+          maven_excludes = self._maven_excludes(os.path.relpath(source_root, get_buildroot()))
+          module.excludes.update(maven_excludes)
           if self.maven_style:
             # Truncate source root, so that targets are listed under src/test/** rather than
             # src/test/com/foobar/package1/*, src/test/com/foobar/package2/* individually.
@@ -657,10 +832,15 @@ class IdeaProject(object):
           ))
       sources = sources_by_root.values()
 
-      content_root = TemplateData(
-        sources=sources,
-        exclude_paths=target_data.get('excludes', ()),
+      content_roots = []
+      main_content_root = dict(
+        root_dir=module.directory if module.directory not in self.placeholder_modules else None,
+        sources=[],
+        exclude_paths=[],
       )
+      if module.targets:
+        main_content_root['sources'].extend(sources)
+        main_content_root['exclude_paths'].extend(target_data.get('excludes', ()))
 
       module_group = self._infer_parent_module(module)
 
@@ -668,19 +848,33 @@ class IdeaProject(object):
       external_libraries = TemplateData(**{conf: list(jars)
                                            for conf, jars in module.libraries.items()})
 
-      module_output = os.path.join(os.path.dirname(self.output_directory),
-                                   '_out_{}'.format(module.name))
-      try:
-        os.makedirs(os.path.join(module_output, 'production'))
-        os.makedirs(os.path.join(module_output, 'test'))
-      except:
-        pass
+      safe_mkdir(os.path.join(module.output_directory, 'production'))
+      safe_mkdir(os.path.join(module.output_directory, 'test'))
+
+      if module.targets:
+        safe_mkdir(module.annotation_processing_sources_dir, clean=True)
+        safe_mkdir(module.annotation_processing_test_sources_dir, clean=True)
+
+        main_content_root['sources'].extend([
+          TemplateData(
+            path=module.annotation_processing_sources_dir,
+            is_test='false',
+            content_type='java-source',
+          ),
+          TemplateData(
+            path=module.annotation_processing_test_sources_dir,
+            is_test='true',
+            content_type=None,
+          ),
+        ])
+
+      if main_content_root['sources']:
+        content_roots.append(TemplateData(**main_content_root))
 
       yield module.filename, TemplateData(
         name=module.name,
-        root_dir=module.directory if module.directory not in self.placeholder_modules else None,
         path='$PROJECT_DIR$/{}'.format(module.filename),
-        content_roots=[content_root],
+        content_roots=content_roots,
         bash=self.bash,
         python=python,
         scala=False, # NB(gmalmquist): We don't use Scala, change this if we ever do.
@@ -689,13 +883,19 @@ class IdeaProject(object):
         external_libraries=external_libraries,
         extra_components=[],
         exclude_folders=sorted(module.excludes | set(self.global_excludes)),
-        java_language_level=self._java_language_level(target_data),
-        module_dependencies=sorted(module.dependencies),
+        java_language_level=language_level,
+        module_dependencies=module.dependencies_template_data(),
         group=module_group,
         make_jar=module.defined_annotation_processors,
-        compile_output=module_output,
+        compile_output=module.output_directory,
       )
 
+    # NB(gmalmquist): This module used to be where all code generated from annotation processors
+    # lived. That's not longer the case; each module now houses its own generated annotation
+    # processing code (which is markedly less hacky).
+    #
+    # This module is still used as a way to pull in dependencies on annotation processors that live
+    # inside the repo, but doesn't define any content roots.
     yield 'annotation-processing-code.iml', TemplateData(
       root_dir=self.workdir,
       path='$PROJECT_DIR$/annotation-processing-code.iml',
@@ -704,9 +904,8 @@ class IdeaProject(object):
       scala=False,
       java_language_level='JDK_1_7',
       group=self._maybe_repo_prefix('.pants.d'),
-      annotation_processing=self.annotation_processing_template,
       exclude_folders=self.global_excludes,
-      module_dependencies=sorted(annotation_processing_code.dependencies),
+      module_dependencies=sorted(annotation_processing_code.dependencies_template_data()),
       external_libraries=TemplateData(default=sorted(m.jar_path for m in self.modules
                                                      if m.defined_annotation_processors)),
     )
@@ -725,7 +924,7 @@ class IdeaProject(object):
       java_language_level='JDK_1_8',
       group=None if self.generate_root_module else 'placeholder',
       annotation_processing=None,
-      exclude_folders=None,
+      exclude_folders=list(self._maven_excludes(root_module_dir, recurse_up=False)),
       module_dependencies=[],
       external_libraries=[],
     )
@@ -738,7 +937,7 @@ class IdeaProject(object):
     return group or None
 
   def _infer_parent_module(self, module):
-    if module.directory in self.placeholder_modules:
+    if module.directory in self.placeholder_modules or module.name in self.placeholder_modules:
       return 'placeholder'
     if os.path.abspath(module.directory).startswith(self.pants_workdir):
       return self._maybe_repo_prefix('.pants.d')
@@ -770,5 +969,25 @@ class IdeaProject(object):
       return None
     target_platform = target_data['platform']
     platforms = self.blob['jvm_platforms']['platforms']
-    target_source_level = platforms[target_platform]['source_level']
-    return 'JDK_{0}_{1}'.format(*target_source_level.split('.'))
+    if target_platform in platforms:
+      target_source_level = platforms[target_platform]['source_level']
+      return 'JDK_{0}_{1}'.format(*target_source_level.split('.'))
+    return None
+
+  def get_module_dependency_scope(self, module_name, dependent_module_name):
+    """Sets the value for the scope of the module dependency between a module and a dependency.
+
+    A scope can be a normal compile and runtime dependency, or PROVIDED, meaning that the dependency
+    is not inherited transitively.
+
+    For now, this is retrieved from a config setting, but eventually should be discovered by
+    looking at an attribute or type of a target.
+    """
+    overrides = self.provided_module_dependencies
+    for key in overrides.keys():
+      if module_name.startswith(key):
+        if dependent_module_name.startswith(overrides.get(key)):
+          self.context.log.info('Setting scope to Provided for {} -> {}'
+                                .format(module_name, dependent_module_name))
+          return 'PROVIDED'
+    return ''

@@ -2,15 +2,17 @@
 
 import os
 import logging
-import unittest2 as unittest
+import shutil
 from contextlib import contextmanager
 from zipfile import ZipFile
 
 from squarepants.binary_utils import Command
-from squarepants.file_utils import temporary_dir
+from squarepants.file_utils import frozen_dir, temporary_dir
+from squarepants.pom_to_build import PomToBuild
 
+from squarepants_test.integration_test_base import IntegrationTestBase
 
-class PantsIntegrationTest(unittest.TestCase):
+class PantsIntegrationTest(IntegrationTestBase):
   """Guard against regressions with some (hopefully time-inexpensive) regressions test."""
 
   def setUp(self):
@@ -24,6 +26,21 @@ class PantsIntegrationTest(unittest.TestCase):
 
   def tearDown(self):
     os.chdir(self._original_wd)
+
+  @contextmanager
+  def _rename_test_builds(self, path, test_build_name='TEST_BUILD'):
+    build_name = 'BUILD'
+    test_build_map = {}
+    for (dirpath, dirnames, filenames) in os.walk(path):
+      if test_build_name in filenames:
+        test_build_map[os.path.join(dirpath, test_build_name)] = os.path.join(dirpath, build_name)
+    for src, dst in test_build_map.items():
+      os.rename(src, dst)
+    try:
+      yield
+    finally:
+      for src, dst in test_build_map.items():
+        os.rename(dst, src)
 
   def assert_success(self, pants_run):
     self.assertTrue(pants_run)
@@ -47,86 +64,15 @@ class PantsIntegrationTest(unittest.TestCase):
                             '--no-sq-depmap-reduce-transitive', 'sq-depmap', 'squarepants::')
     self.assert_success(binary_run)
 
-  def test_link_resources_jars(self):
-    binary_run = self.pants('test', self._link_resources_jars_testdir)
-    self.assert_success(binary_run)
-
-  def test_link_resources_jars_binary(self):
-    binary_spec = '{path}:{name}'.format(path=self._link_resources_jars_testdir, name='bin')
-    with temporary_dir() as dist_dir:
-      self.assert_success(self.pants('--pants-distdir={}'.format(dist_dir), 'binary', binary_spec))
-      binary_jar = os.path.join(dist_dir, 'link-resources-jars.jar')
-      java_result = self.java('-jar', binary_jar)
-      self.assert_success(java_result)
-      self.assertIn('Everything looks OK.', java_result)
-      self.assertIn('xyzzy.jar', self.jar('-tf', binary_jar))
-
   def test_export_squarepants(self):
     self.assert_success(self.pants('export', 'squarepants::'))
-
-  @contextmanager
-  def _invariant_file_contents(self, path):
-    """Ensures that the contents of the file are unchanged after the contextmanager exits.
-
-    Reads the file contents before yielding, then writes back the file contents after.
-    :param string path: The path to the text file to keep invariant.
-    """
-    with open(path, 'r') as f:
-      contents = f.read()
-    try:
-      yield contents
-    finally:
-      with open(path, 'w+') as f:
-        f.write(contents)
-
-  def test_app_manifest_bundle(self):
-    """Makes sure the app-manifest.yaml properly makes it into the jar file on a ./pants binary.
-
-    In particular, makes sure that the app-manifest.yaml is kept up to date and does not get stale,
-    even if it is the only file that has changed since the last time ./pants binary was invoked.
-    """
-    with temporary_dir() as distdir:
-      source_yaml_file = 'squarepants/pants-aop-test-app/app-manifest.yaml'
-      with self._invariant_file_contents(source_yaml_file) as plain_app_manifest:
-        self.assertNotIn('bogus_flag: "bogus one"', plain_app_manifest)
-
-        with open(source_yaml_file, 'a') as f:
-          f.write('\nbogus_flag: "bogus one"\n')
-
-        self.assert_success(self.pants('--pants-distdir={}'.format(distdir),
-                                       'binary', '--binary-jvm-no-use-nailgun',
-                                       'squarepants/pants-aop-test-app'))
-
-        binary = os.path.join(distdir, 'pants-aop-test-app.jar')
-        self.assertTrue(os.path.exists(binary))
-        with ZipFile(binary, 'r') as zf:
-          with zf.open('app-manifest.yaml') as f:
-            self.assertIn('bogus_flag: bogus one', f.read())
-
-        with open(source_yaml_file, 'w') as f:
-          f.write(plain_app_manifest)
-
-        self.assert_success(self.pants('--pants-distdir={}'.format(distdir),
-                                       'binary', '--binary-jvm-no-use-nailgun',
-                                       'squarepants/pants-aop-test-app',
-                                       ))
-
-        binary = os.path.join(distdir, 'pants-aop-test-app.jar')
-        self.assertTrue(os.path.exists(binary))
-        with ZipFile(binary, 'r') as zf:
-          with zf.open('app-manifest.yaml') as f:
-            self.assertNotIn('bogus_flag: bogus one', f.read())
-
-  @property
-  def _link_resources_jars_testdir(self):
-    return 'squarepants/src/test/java/com/squareup/squarepants/integration/linkresourcesjars'
 
   def test_jar_manifest(self):
     with temporary_dir() as distdir:
       def do_test():
         binary_run = self.pants('--pants-distdir={}'.format(distdir),
-                                  'binary', '--binary-jvm-no-use-nailgun',
-                                  'squarepants/src/test/java/com/squareup/squarepants/integration/manifest:manifest-test')
+                                'binary', '--binary-jvm-no-use-nailgun',
+                                'squarepants/src/test/java/com/squareup/squarepants/integration/manifest:manifest-test')
         self.assert_success(binary_run)
         binary = os.path.join(distdir, 'manifest-test.jar')
         self.assertTrue(os.path.exists(binary))
@@ -137,3 +83,122 @@ class PantsIntegrationTest(unittest.TestCase):
       do_test()
       # Make sure it works a second time
       do_test()
+
+  def test_jax_ws_codegen(self):
+    with temporary_dir() as distdir:
+      binary_run = self.pants(
+        '--pants-distdir={}'.format(distdir),
+        'binary run',
+        '--binary-jvm-no-use-nailgun',
+        'squarepants/src/test/java/com/squareup/squarepants/integration/jaxwsgen'
+      )
+      self.assert_success(binary_run)
+      binary = os.path.join(distdir, 'jaxwsgen.jar')
+      self.assertTrue(os.path.exists(binary))
+
+  def test_jooq_codegen(self):
+    squarepants_java = 'squarepants/src/test/java'
+    jooq_package = 'com.squareup.squarepants.integration.jooq'
+    jooq_path = os.path.join(squarepants_java, jooq_package.replace('.', '/'))
+    spot_check = ['{package}.{name}'.format(package=jooq_package, name=name)
+                  for name in ('model.Tables', 'model.tables.People', 'model.tables.Places')]
+
+    jooq_model_directory = os.path.join('squarepants', 'src', 'test', 'java', 'com', 'squareup',
+                                        'squarepants', 'integration', 'jooq', 'model')
+    shutil.rmtree(jooq_model_directory, ignore_errors=True)
+
+    def check_classes(should_exist):
+      for class_name in spot_check:
+        path = '{}.java'.format(os.path.join(squarepants_java, class_name.replace('.', '/')))
+        self.assertEquals(should_exist, os.path.exists(path))
+      if not should_exist:
+        # No need to spin up jvm just to check to see if classes *don't* exist.
+        return
+      run = self.pants('run', '{}:bin'.format(jooq_path))
+      self.assert_success(run)
+      existence = {}
+      for line in run.split('\n'):
+        if line and '\t' in line:
+          key, val = line.split('\t')
+          existence[key] = val
+      for class_name in spot_check:
+        self.assertEquals(existence[class_name], 'present')
+
+    check_classes(False)
+
+    with frozen_dir(jooq_path):
+      # jOOQ is awkward because it generates code to the normal source folders, which is then
+      # checked in. So we do this in a frozen_dir context to clean up after it.
+      self.assert_success(self.pants('jooq', jooq_path))
+      check_classes(True)
+
+    check_classes(False)
+
+  @contextmanager
+  def _generated_module(self, module):
+    with frozen_dir(module):
+      with self._rename_test_builds(module):
+        PomToBuild().convert_pom(os.path.join(module, 'pom.xml'))
+        yield module
+
+  def test_jooq_parse_pom_and_generate(self):
+    with self._generated_module('squarepants/pants-test-app/jooq-integration') as module:
+      self.assert_success(self.pants('jooq', '{}:jooq'.format(module)))
+      self.assert_success(self.pants('run', '{}'.format(module)))
+
+  def test_parse_and_generate_junit_extra_env_vars(self):
+    with self._generated_module('squarepants/pants-test-app/env-vars') as module:
+      self.assert_success(self.pants('test', '{}/src/test/java:test'.format(module)))
+
+  def test_parse_and_generate_junit_extra_jvm_options(self):
+    with self._generated_module('squarepants/pants-test-app/jvm-options') as module:
+      self.assert_success(self.pants('test', '{}/src/test/java:test'.format(module)))
+
+  def test_generate_and_use_build_symbols(self):
+    with self._generated_module('squarepants/pants-test-app/build-symbols') as module:
+      PomToBuild().convert_pom(os.path.join(module, 'pom.xml'))
+      self.assert_success(self.pants('test', '{}/src/test/java:test'.format(module)))
+
+  def test_generate_jar_with_excludes(self):
+    with self._generated_module('squarepants/pants-test-app/jar-excludes') as module:
+      contains_jar_files = False
+      contains_hamcrest_exclude = False
+      with open(os.path.join(module, 'src', 'main', 'java', 'BUILD.gen')) as f:
+        lines = f.readlines()
+        for line in lines:
+          if "jar_library(name='jar_files'," in line:
+            contains_jar_files = True
+          elif "exclude(org='org.hamcrest', name='hamcrest-core')" in line:
+            contains_hamcrest_exclude = True
+      self.assertTrue(contains_jar_files and contains_hamcrest_exclude,
+                      'Missing expected jar library with excludes!\n\n{}\n'.format(''.join(lines)))
+
+  def test_protobuf_publishing(self):
+    with temporary_dir() as tmpdir:
+      test_spec = 'service/exemplar-db/src/main/proto'
+      command = [
+        'publish.jar',
+        '--no-dryrun',
+        '--no-commit',
+        '--no-prompt',
+        '--no-transitive',
+        '--local={}'.format(tmpdir),
+        '--doc-javadoc-ignore-failure',
+        test_spec,
+      ]
+      run = self.pants(*command)
+      self.assert_success(run)
+
+      def find_published_jar():
+        for root, dirs, files in os.walk(tmpdir):
+          for name in files:
+            if name.endswith('SNAPSHOT.jar'):
+              return os.path.join(root, name)
+
+      jar_path = find_published_jar()
+      self.assertFalse(jar_path is None)
+      with ZipFile(jar_path, 'r') as jar:
+        contents = jar.namelist()
+        self.assertTrue(any(name.endswith('.proto') for name in contents))
+        self.assertTrue(any(name.endswith('.class') for name in contents))
+        self.assertFalse(any(name.endswith('.java') for name in contents))

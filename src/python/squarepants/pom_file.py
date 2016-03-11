@@ -1,12 +1,13 @@
 #!/usr/bin/env python2.7
 
+import copy
 import os
 import sys
-from datetime import datetime
+from xml.etree import ElementTree
 
 from generation_context import GenerationContext
 from pom_handlers import (DepsFromPom, JavaOptionsInfo, WireInfo, SignedJarInfo,
-                          SpecialPropertiesInfo, CachedDependencyInfos, ShadingInfo)
+                          SpecialPropertiesInfo, CachedDependencyInfos, ShadingInfo, JooqInfo)
 from pom_utils import PomUtils
 
 
@@ -43,6 +44,7 @@ class PomFile(object):
     self._java_options = None
     self._parents = None
     self._shading_rules = None
+    self._config_tree = None
 
   @classmethod
   def find(cls, pom_file_path, root_directory=None, generation_context=None):
@@ -71,16 +73,20 @@ class PomFile(object):
     self.signed_jar_info = SignedJarInfo.from_pom(self.path, self.root_directory)
     self.java_options_info = JavaOptionsInfo.from_pom(self.path, self.root_directory)
     self.shading_info = ShadingInfo.from_pom(self.path, self.root_directory)
+    self.jooq_info = JooqInfo.from_pom(self.path, self.root_directory)
 
   def _update_properties(self):
     self._properties.update(self.deps_from_pom.properties)
     self._properties.update(SpecialPropertiesInfo.from_pom(self.path,
                                                            self.root_directory).properties)
     # Magic maven symbols.
-    self._properties['project.basedir'] = self.directory
-    self._properties['project.baseUri'] = 'file://{}'.format(os.path.realpath(self.directory))
-    time_format = "%Y-%m-%d'T'%H:%M:%S'Z'"
-    self._properties['maven.build.timestamp'] = datetime.now().strftime(time_format)
+    basedir = os.path.abspath(self.directory)
+    self._properties['basedir'] = "' + symbols.module_directory + '"
+    self._properties['project.basedir'] = "' + symbols.module_directory + '"
+    self._properties['project.baseUri'] = "' + symbols.module_uri + '"
+    self._properties['project.build.directory'] = "' + symbols.module_target_directory + '"
+    self._properties['maven.build.timestamp'] = "' + symbols.build_timestamp + '"
+    self._properties['user.name'] = "' + symbols.user_name + '"
 
   def _initialize_dependency_lists(self):
     aggregate_lib_deps, aggregate_test_deps = self.deps_from_pom.get(self.path)
@@ -205,17 +211,77 @@ class PomFile(object):
       total.source_level = self.java_options_info.source_level
       total.target_level = self.java_options_info.target_level
       total.compile_args = self.java_options_info.compile_args
+      total.test_env_vars = dict(self.java_options_info.test_env_vars)
+      total.test_jvm_args = list(self.java_options_info.test_jvm_args)
 
       pom = self.parent
       if pom:
         total.source_level = total.source_level or pom.java_options.source_level
         total.target_level = total.target_level or pom.java_options.target_level
         total.compile_args = pom.java_options.compile_args + total.compile_args
+        total.test_env_vars.update(pom.java_options.test_env_vars)
+        total.test_jvm_args.extend(pom.java_options.test_jvm_args)
 
       total.compile_args = self._dedup_compile_args(total.compile_args)
       total.compile_args = self._correct_prefixes(total.compile_args)
       self._java_options = total
     return self._java_options
+
+  @classmethod
+  def _merge_jooq_config(cls, one, two):
+    merge_set = {'jdbc', 'properties', 'generator', 'database', 'generate', 'target'}
+    merged = copy.deepcopy(one)
+    frontier = [(merged, '.', child) for child in two]
+    while frontier:
+      parent, path, node = frontier.pop(0)
+      partner = parent.find('./{}'.format(node.tag))
+      stripped_tag = node.tag
+      if '}' in node.tag:
+        stripped_tag = node.tag[node.tag.find('}')+1:]
+      if partner is None:
+        # Append.
+        parent.append(node)
+      elif stripped_tag in merge_set:
+        # Merge children.
+        frontier.extend((partner, '?', kid) for kid in node)
+      else:
+        # Replace.
+        parent.remove(partner)
+        parent.append(copy.deepcopy(node))
+    return merged
+
+  @classmethod
+  def _inject_jooq_schema_exclusion(cls, tree):
+    table_name = 'SCHEMA_VERSION'
+    prefix = tree.tag[:tree.tag.rfind('}')+1]
+    node = tree.find('./{0}generator/{0}database/{0}excludes'.format(prefix))
+    database = tree.find('./{0}generator/{0}database'.format(prefix))
+    if node is not None:
+      if node.text is None or not node.text.strip():
+        node.text = table_name
+      elif table_name not in node.text.upper():
+        node.text += ' | {}'.format(table_name)
+    elif database is not None:
+      database.append(ElementTree.fromstring('<excludes>{}</excludes>'.format(table_name)))
+
+  @property
+  def jooq_config_tree(self):
+    if self._config_tree is None:
+      tree = None
+      for pom in reversed(self.walk_pom_parents()):
+        if tree is None:
+          tree = pom.jooq_info.config_tree
+          continue
+        if pom.jooq_info.config_tree is None:
+          continue
+        tree = self._merge_jooq_config(tree, pom.jooq_info.config_tree)
+      self._inject_jooq_schema_exclusion(tree)
+      self._config_tree = tree
+    return self._config_tree
+
+  @property
+  def jooq_config(self):
+    return ElementTree.tostring(self.jooq_config_tree)
 
   @property
   def manifest_entries(self):
@@ -283,3 +349,11 @@ class PomFile(object):
     for pom in reversed(self.walk_pom_parents()):
       props.update(pom._properties)
     return props
+
+  @property
+  def mainclass(self):
+    return self.deps_from_pom.get_property('project.mainclass')
+
+  @property
+  def artifact_id(self):
+    return self.deps_from_pom.artifact_id

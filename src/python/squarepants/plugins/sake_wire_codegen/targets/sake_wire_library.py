@@ -8,16 +8,14 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
 import logging
 
 # NB(zundel): these definitions are a part of the source from https://github.com/pantsbuild/pants
-from pants.backend.jvm.targets.exportable_jvm_library import ExportableJvmLibrary
-from pants.base.exceptions import TargetDefinitionException
+from pants.backend.jvm.targets.jvm_target import JvmTarget
 from pants.base.payload import Payload
 from pants.base.payload_field import PrimitiveField
-from pants.base.validation import assert_list
 
 
 logger = logging.getLogger(__name__)
 
-class SakeWireLibrary(ExportableJvmLibrary):
+class SakeWireLibrary(JvmTarget):
   """Generates a stub Java library using Wire from .proto files."""
 
   # NB(zundel): the 'sources' and 'dependencies' fields are defined in a superclass.

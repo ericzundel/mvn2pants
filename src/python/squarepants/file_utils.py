@@ -24,6 +24,19 @@ def temporary_file():
     os.remove(tempfile)
 
 
+@contextmanager
+def frozen_dir(path):
+  """Ensures that the contents of the directory are the same after exiting as before entering."""
+  with temporary_dir() as tempdir:
+    backup = os.path.join(tempdir, 'backup')
+    shutil.copytree(path, backup)
+    try:
+      yield path
+    finally:
+      shutil.rmtree(path, ignore_errors=True)
+      shutil.move(backup, path)
+
+
 def file_pattern_exists_in_subdir(subdir, pattern):
   """Search for a file pattern recursively in a subdirectory
 

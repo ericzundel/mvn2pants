@@ -67,7 +67,7 @@ class PatchyPants(object):
   @classmethod
   def square_pants_release(cls, options, release_args):
     """Runs a pants release with the given arguments to the release script."""
-    known_args = {'--no-push', '--overwrite'}
+    known_args = {'--no-push', '--overwrite', '--dirty'}
 
     unknown = [arg for arg in release_args if arg not in known_args]
     if unknown:
@@ -75,7 +75,7 @@ class PatchyPants(object):
       cls.usage()
       return
 
-    releaser = Releaser(release_args)
+    releaser = Releaser(release_args, options.dirty)
     releaser.release()
 
   @classmethod
@@ -83,7 +83,7 @@ class PatchyPants(object):
     print(dedent('''
       Usage:
         {script} <arguments to pants>
-        {script} --release [--no-push] [--overwrite]
+        {script} --release [--no-push] [--overwrite] [--dirty]
     '''.format(script='pants_with_patches')))
 
   @classmethod
@@ -107,12 +107,17 @@ class PatchyPants(object):
                         help='Automatically patch and release pants to the java repo.')
     parser.add_argument('-l', '--log-level', default='info',
                         help='Set the log level.')
+    parser.add_argument('--dirty', dest='dirty', action='store_true',
+                        help='Use the current state of the pants repo instead of pulling.')
+    parser.add_argument('--no-dirty', dest='dirty', action='store_false',
+                        help='Update the pants repo to the latest version first.')
     parser.add_argument('--commit-patches', default=False, action='store_true',
                         help='Commit patches after applying them. This happens by default for a '
                              'release, but not when just running pants in development mode. In '
                              'development mode, the commits will be kept on '
                              'temp/temporary-patching-branch until the next time this command is '
                              'run.')
+    parser.set_defaults(dirty=False)
 
     options, action_args = parser.parse_known_args(args)
     if action_args and args[-len(action_args):] != action_args:
@@ -137,8 +142,10 @@ class PatchyPants(object):
 
 class Releaser(object):
   """Automates most of the work of updating the version of pants in our java repo."""
-  def __init__(self, release_script_args):
+
+  def __init__(self, release_script_args, use_dirty):
     self.release_script_args = release_script_args
+    self.use_dirty = use_dirty
 
   def _get_java_dir(self):
     """Returns the current working directory if it is the java repo, otherwise raises an error."""
@@ -182,6 +189,11 @@ class Releaser(object):
   def _setup_pants_repo(self):
     """Cleans the pants repo and applies patches, yielding the Git command for the repo."""
     git = PantsGit()
+
+    if self.use_dirty:
+      yield git
+      raise StopIteration
+
     if not git.is_clean():
         raise RunError('Pants source not clean: please stash or commit changes in {}.'
                        .format(git.cwd))

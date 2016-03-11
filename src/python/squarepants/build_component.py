@@ -1,14 +1,20 @@
 #!/usr/bin/env python2.7
 
-from abc import ABCMeta, abstractmethod, abstractproperty
+import getpass
+import logging
 import os
 import re
-from collections import defaultdict, OrderedDict
+import sys
+from abc import ABCMeta, abstractmethod, abstractproperty
+from collections import defaultdict, namedtuple, OrderedDict
 from textwrap import dedent
 
 from generation_context import GenerationContext
 from generation_utils import GenerationUtils
 from target_template import Target
+
+
+logger = logging.getLogger(__name__)
 
 
 class BuildComponent(object):
@@ -30,11 +36,6 @@ class BuildComponent(object):
     """
     self.pom = pom_file
     self.gen_context = generation_context or GenerationContext()
-
-  @property
-  def main_class(self):
-    """Returns the main class property from this module's pom file, or None."""
-    return self.pom.deps_from_pom.get_property('project.mainclass')
 
   @abstractproperty
   def exists(self):
@@ -228,8 +229,7 @@ class JarFilesMixin(object):
       ''').format(name=target_name,
                   jars=','.join('\n{}{}'.format(' '*4, jar) for jar in sorted(set(jar_deps))))
     if pom_file:
-      jar_library =  GenerationUtils.symbol_substitution(pom_file.properties,
-                                               jar_library)
+      jar_library = GenerationUtils.symbol_substitution(pom_file.properties, jar_library)
     return GenerationUtils.autoindent(jar_library)
 
 
@@ -238,10 +238,10 @@ class MainClassComponent(BuildComponent):
 
   @property
   def exists(self):
-    return True if self.main_class else False
+    return True if self.pom.mainclass else False
 
   def generate(self):
-    main_class = self.main_class
+    main_class = self.pom.mainclass
     dependencies = [
       self.gen_context.format_spec(name=self.get_project_target_name('lib')),
     ]
@@ -271,7 +271,7 @@ class MainClassComponent(BuildComponent):
     return self.create_project_target(Target.jvm_binary,
       name=self.pom.default_target_name,
       main=main_class,
-      basename=self.pom.deps_from_pom.artifact_id,
+      basename=self.pom.artifact_id,
       dependencies=dependencies,
       manifest_entries=manifest_entries,
       deploy_excludes=deploy_excludes,
@@ -363,24 +363,45 @@ class MainProtobufLibraryComponent(JarFilesMixin, SubdirectoryComponent):
 
   def generate_target_arguments(self):
     args = super(MainProtobufLibraryComponent, self).generate_target_arguments()
+    #  If there is no src/main/java:lib target, then we don't need to tack
+    # on a uniqifying suffix, this is the only artifact that will be published for this
+    # package
+    artifactId_suffix = ('-proto' if MainJavaLibraryComponent(self.pom).exists else '')
+    dependencies = self._deps + [self.jar_target_spec, ':{}'.format(self._proto_sources_name)]
     args.update({
       'sources': self._proto_sources,
       'imports': [],
-      'dependencies': format_dependency_list(self._deps + [self.jar_target_spec]),
+      'dependencies': format_dependency_list(dependencies),
       'platform': self.get_jvm_platform_name(),
+      'groupId' : self.pom.deps_from_pom.group_id,
+      'artifactId' : self.pom.deps_from_pom.artifact_id + artifactId_suffix,
     })
     return args
 
   @property
+  def _proto_sources_name(self):
+    return self.gen_context.infer_target_name(self.directory, 'proto-sources')
+
+  @property
+  def proto_resources_contents(self):
+    return self.format_project(
+      Target.resources,
+      name=self._proto_sources_name,
+      sources=self._proto_sources,
+    )
+
+  @property
   def wire_proto_path_contents(self):
-    return self.format_project(Target.wire_proto_path,
-                               name=self.gen_context.infer_target_name(self.directory, 'path'),
-                               sources=self._proto_sources,
-                               dependencies=format_dependency_list(find_wire_proto_paths(self._deps)))
+    return self.format_project(
+      Target.wire_proto_path,
+      name=self.gen_context.infer_target_name(self.directory, 'path'),
+      sources=self._proto_sources,
+      dependencies=format_dependency_list(find_wire_proto_paths(self._deps)),
+    )
 
   def generate_subdirectory_code(self):
     return super(MainProtobufLibraryComponent, self).generate_subdirectory_code() \
-           + self.wire_proto_path_contents
+           + self.wire_proto_path_contents + self.proto_resources_contents
 
 
 class TestProtobufLibraryComponent(MainProtobufLibraryComponent):
@@ -427,6 +448,10 @@ class MainJavaLibraryComponent(JarFilesMixin, SubdirectoryComponent):
     return None
 
   @property
+  def artifactId_suffix(self):
+    return ''
+
+  @property
   def _deps(self):
     """Dependencies that get injected into the generated target's dependency list."""
     return self.pom.lib_deps
@@ -435,24 +460,29 @@ class MainJavaLibraryComponent(JarFilesMixin, SubdirectoryComponent):
     args = super(MainJavaLibraryComponent, self).generate_target_arguments()
     library_deps = self._deps + [self.jar_target_spec]
     module_path = os.path.dirname(self.pom.path)
-    if self.main_class:
+    if self.pom.mainclass:
       spec_name = self.gen_context.infer_target_name(module_path, 'extra-files')
       library_deps.append(self.gen_context.format_spec(path=module_path, name=spec_name))
+    artifactId = self.pom.deps_from_pom.artifact_id + self.artifactId_suffix
     args.update({
       'sources': "rglobs('*.java')",
       'dependencies': format_dependency_list(library_deps),
       'resources': self.pom.resources,
       'groupId': self.pom.deps_from_pom.group_id,
-      'artifactId': self.pom.deps_from_pom.artifact_id,
+      'artifactId': artifactId,
       'platform': self.get_jvm_platform_name(),
     })
     return args
 
 
 class TestJavaLibraryComponent(MainJavaLibraryComponent):
-  """Generates junit_tests for src/tests/java."""
+  """Generates junit_tests for src/test/java."""
 
   INTEGRATION_TEST_PATTERN=re.compile(r'.*IT.java')
+
+  @property
+  def artifactId_suffix(self):
+    return '-test'
 
   @property
   def subdirectory(self):
@@ -480,23 +510,26 @@ class TestJavaLibraryComponent(MainJavaLibraryComponent):
     return args
 
   def generate_subdirectory_code(self):
+    common_args = dict(
+      cwd=self.pom.directory,
+      extra_env_vars=self.pom.java_options.test_env_vars or None,
+      extra_jvm_options=self.pom.java_options.test_jvm_args or None,
+      platform=self.get_jvm_platform_test_name(),
+      dependencies=["':{}'".format(self.gen_context.infer_target_name(self.directory, 'lib'))],
+    )
+
     test_target = self.format_project(Target.junit_tests,
       name=self.gen_context.infer_target_name(self.directory, 'test'),
       sources="rglobs('*Test.java')",
-      cwd=self.pom.directory,
-      dependencies=["':{}'".format(self.gen_context.infer_target_name(self.directory, 'lib'))],
-      platform=self.get_jvm_platform_test_name(),
+      **common_args
     )
 
     test_target += self.format_project(Target.junit_tests,
-                            name=self.gen_context.infer_target_name(self.directory,
-                                                                    'integration-tests'),
-                            sources="rglobs('*IT.java')",
-                            cwd=self.pom.directory,
-                            tags=['integration'],
-                            dependencies=["':{}'".format(
-                              self.gen_context.infer_target_name(self.directory, 'lib'))],
-                            platform=self.get_jvm_platform_test_name())
+      name=self.gen_context.infer_target_name(self.directory, 'integration-tests'),
+      sources="rglobs('*IT.java')",
+      tags=['integration'],
+      **common_args
+    )
 
     return test_target + super(TestJavaLibraryComponent,
                                self).generate_subdirectory_code()
@@ -643,6 +676,152 @@ class PlaceholderTestComponent(BuildComponent):
     )
 
 
+class JooqGenComponent(BuildComponent):
+
+  class JdbcConfig(namedtuple('JdbcConfig', ['url', 'user', 'password'])):
+    """Stores information contained in the JDBC stanza for jooq configuration."""
+
+    class MissingConfigError(ValueError):
+      """Thrown if there is missing config information."""
+
+    @classmethod
+    def from_config_tree(cls, tree):
+      """Creates a JdbcConfig database object by parsing the input tree.
+
+      :param :class:`etree.ElementTree.Element` tree: The jooq config tree.
+      :rtype JooqGenComponent.JdbcConfig:
+      :raises: :class:`JooqGenComponent.JdbcConfig.MissingConfigError` if necessary data is missing.
+      """
+      tag_prefix = tree.tag[:tree.tag.rfind('}')+1]
+      jdbc_prefix = './{0}jdbc/{0}'.format(tag_prefix)
+      jdbc_nodes = [tree.find('{}{}'.format(jdbc_prefix, tag)) for tag in cls._fields]
+      for name, node in zip(cls._fields, jdbc_nodes):
+        if node is None:
+          raise cls.MissingConfigError('jOOQ config xml is missing the "{}" tag.'.format(name))
+      return cls(*(node.text for node in jdbc_nodes))
+
+  _jooq_target_deps = [
+    '3rdparty:org.jooq.jool',
+    '3rdparty:org.jooq.jooq',
+    '3rdparty:org.jooq.jooq-codegen',
+    '3rdparty:org.jooq.jooq-meta',
+    'dbmigrate/src/main/java:lib',
+  ]
+
+  @property
+  def exists(self):
+    return self.pom.jooq_info.config_tree is not None
+
+  def generate(self):
+    config_data = self._dedent_xml(self.pom.jooq_config)
+    config_data = '<configuration>{tail}'.format(tail=config_data[config_data.find('\n'):])
+    config_data = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n{body}'.format(
+      body=config_data,
+    )
+
+    try:
+      symbols = dict(self.pom.properties)
+      # NB(gmalmquist): We switched to using build_symbols for dynamic properties,
+      # however that only works in BUILD files, and this is raw xml. So we have to
+      # explicitly define the dynamic properites.
+      basedir = os.path.abspath(self.pom.directory)
+      symbols.update({
+        'basedir': basedir,
+        'project.basedir': basedir,
+        'project.baseUri': 'file://{}'.format(os.path.realpath(basedir)),
+        'project.build.directory': os.path.join(basedir, 'target'),
+        'user.name': getpass.getuser(),
+      })
+      config_data = GenerationUtils.symbol_substitution(symbols, config_data,
+                                                        symbols_name=self.pom.path,
+                                                        fail_on_missing=True)
+    except GenerationUtils.MissingSymbolError as e:
+      logger.debug('{} Skipping jooq target generation.'.format(e))
+      return ''
+
+    config_path = os.path.join(self.pom.directory, self.gen_context.jooq_config_file)
+    with open(config_path, 'w+') as f:
+      f.write(config_data.strip())
+
+    setup_target = None
+    if not self.pom.jooq_info.skip_setup:
+      try:
+        setup_target = self._generate_setup_target()
+      except self.JdbcConfig.MissingConfigError as e:
+        logger.debug('Skipping jooq target generation for {} due to missing jdbc config.\n{}'
+                     .format(self.pom.path, e))
+        return ''
+
+    jooq_target_deps = list(self._jooq_target_deps)
+    if setup_target:
+      sql_name = self.gen_context.infer_target_name(self.pom.directory, 'jooq-sql-setup')
+      jooq_target_deps.append(':{}'.format(sql_name))
+
+    targets = [
+      self.create_project_target(
+        Target.jvm_prep_command,
+        name='jooq',
+        goal='jooq',
+        mainclass='org.jooq.util.GenerationTool',
+        args=[
+          config_path,
+        ],
+        dependencies=format_dependency_list(jooq_target_deps),
+      )
+    ]
+    if setup_target:
+      targets.append(setup_target)
+    return '\n'.join(targets)
+
+  def _generate_setup_target(self):
+    database = self.JdbcConfig.from_config_tree(self.pom.jooq_config_tree)
+    jdbc_prefixes_and_types = [
+      ('jdbc:mysql:', 'sql:mysql'),
+      ('jdbc:postgresql:', 'sql:postgres'),
+    ]
+    database_type = None
+    for url_prefix, jdbc_type in jdbc_prefixes_and_types:
+      if database.url.startswith(url_prefix):
+        database_type = jdbc_type
+        break
+    if database_type is None:
+      raise ValueError('Unable to infer jdbc database type from url "{}".'.format(database.url))
+
+    return self.create_project_target(
+      Target.jvm_prep_command,
+      name='jooq-sql-setup',
+      goal='jooq',
+      mainclass='com.squareup.dbmigrate.tools.Migrator',
+      args=[
+        '--url="{}"'.format(database.url),
+        '--type="{}"'.format(database_type),
+        '--username="{}"'.format(database.user or ''),
+        '--password="{}"'.format(database.password or ''),
+        '--migrations-dir="{}/${{squareup.migrationsPath}}"'.format(self.pom.directory),
+        '--clean',
+      ],
+      dependencies=[
+        'dbmigrate/src/main/java:lib',
+      ],
+    )
+
+  def _dedent_xml(self, blob):
+    pattern = re.compile('^[ ]*')
+    lines = blob.rstrip().splitlines()
+    indent = sys.maxint
+    for i, line in enumerate(lines):
+      spaces = pattern.match(line)
+      group = spaces.group()
+      if not group:
+        continue
+      if len(group) < indent:
+        indent = len(group)
+      elif i == len(lines)-1 and indent < len(group):
+        indent = len(group)
+    return '\n'.join(line[min(indent, len(pattern.match(line).group())):] for line in lines)
+
+
+
 VALID_SPEC_PATTERN = re.compile(r'[^:A-Za-z0-9_/.-]')
 WIRE_PROTO_PATH_PATTERN = re.compile(r'^[a-z_]+[(]name[ ]*=[ ]*[\'"]path[\'"]')
 
@@ -750,4 +929,5 @@ BuildComponent.TYPE_LIST = [
   PlaceholderLibraryComponent,
   TestJavaLibraryComponent,
   PlaceholderTestComponent,
+  JooqGenComponent,
 ]

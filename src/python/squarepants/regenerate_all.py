@@ -60,8 +60,18 @@ class RegenerateAll(object):
     logger.debug('Removing old generated BUILD.gen and BUILD.aux files')
     os.system(
       "find {root} \( -path '*/.pants.d/*' -prune -path '*/target/*' -prune \) "
-      " -o \( -name BUILD.gen -o -name BUILD.aux \) | xargs rm -f"
+      " -o \( -name BUILD.gen -o -name BUILD.aux -o -name jooq_config.gen.xml \) | xargs rm -f"
       .format(root=self.baseroot))
+
+  def _generate_module_list_file(self):
+    modules = PomUtils.get_modules()
+    context = GenerationContext()
+    with open(context.module_list_file, 'w+') as f:
+      f.write("# List of modules for pants's reference. This are currently generated directly\n"
+              "# from pom.xml, but in the future we can simply use\n"
+              "# ./pants filter --target-type=jvm_binary ::\n\n")
+      for module in modules:
+        f.write('{}\n'.format(module.strip()))
 
   def _convert_poms(self):
     modules = PomUtils.get_modules()
@@ -110,6 +120,7 @@ class RegenerateAll(object):
 
   def execute(self):
     Task('clean_build_gen', self._clean_generated_builds)()
+    Task('generate_module_list_file', self._generate_module_list_file)()
     Task('convert_poms', self._convert_poms)()
     Task('regenerate_external_protos', self._regenerate_external_protos)()
     Task('regenerate_3rdparty', self._regenerate_3rdparty)()

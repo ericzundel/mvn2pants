@@ -12,13 +12,20 @@ from squarepants.generate_3rdparty import ThirdPartyBuildGenerator
 DependencySet = namedtuple('DependencySet', ['dependency_list', 'dependency_string'])
 
 
-def _sanitize_build_contents(text):
+def _get_sanitized_blocks(text):
   """Strip leading/trailing whitespace, empty lines, and line comments."""
   lines = text.split('\n')
   lines = (line[:line.rfind('#')] for line in lines)
   lines = (line.strip() for line in lines)
-  lines = (line for line in lines if line)
-  return '\n'.join(lines)
+  current_block = []
+  for line in lines:
+    if line:
+      current_block.append(line)
+    elif current_block:
+      yield '\n'.join(current_block)
+      current_block = []
+  if current_block:
+    yield '\n'.join(current_block)
 
 
 def dependency_set_test(dependency_set_factory):
@@ -26,8 +33,10 @@ def dependency_set_test(dependency_set_factory):
     dependency_set = dependency_set_factory(self)
     generator = ThirdPartyBuildGenerator(dependency_set.dependency_list)
     result = generator.generate()
-    self.assertEquals(_sanitize_build_contents(dependency_set.dependency_string),
-                      _sanitize_build_contents(result),
+    expected_blocks = set(_get_sanitized_blocks(dependency_set.dependency_string))
+    received_blocks = set(_get_sanitized_blocks(result))
+    self.assertEquals(expected_blocks,
+                      received_blocks,
                       'Generated code does not match expectations!\n'
                       '\nExpected:\n{expected}\n'
                       '\nReceived:\n{received}'.format(expected=dependency_set.dependency_string,
@@ -44,9 +53,9 @@ class GenerateThirdPartyTest(unittest.TestCase):
       'artifactId': 'simple-example',
       'version': '1.0',
     }], dependency_string = '''
-      jar_library(name='com.squareup.simple-example',
-        jars=[
-          sjar(org='com.squareup', name='simple-example', rev='1.0',)
+      managed_jar_libraries(name='managed',
+        artifacts=[
+          sjar(org='com.squareup', name='simple-example', rev='1.0',),
         ],
       )
     ''')
@@ -64,11 +73,18 @@ class GenerateThirdPartyTest(unittest.TestCase):
       'version': '1.2.3',
       'classifier': 'two',
     }], dependency_string = '''
+      managed_jar_libraries(name='managed',
+        artifacts=[
+          ':org.foobar.artifact-name',
+        ],
+      )
+
       jar_library(name='org.foobar.artifact-name',
         jars=[
           sjar(org='org.foobar', name='artifact-name', rev='1.2.3', classifier='one',),
-          sjar(org='org.foobar', name='artifact-name', rev='1.2.3', classifier='two',)
+          sjar(org='org.foobar', name='artifact-name', rev='1.2.3', classifier='two',),
         ],
+        managed_dependencies=':managed',
       )
     ''')
 
@@ -85,14 +101,10 @@ class GenerateThirdPartyTest(unittest.TestCase):
       'version': '1.2.3',
       'classifier': 'two',
     }], dependency_string = '''
-      jar_library(name='org.foobar.a.artifact-name',
-        jars=[
-          sjar(org='org.foobar.a', name='artifact-name', rev='1.2.3', classifier='one',)
-        ],
-      )
-      jar_library(name='org.foobar.b.artifact-name',
-        jars=[
-          sjar(org='org.foobar.b', name='artifact-name', rev='1.2.3', classifier='two',)
+      managed_jar_libraries(name='managed',
+        artifacts=[
+          sjar(org='org.foobar.a', name='artifact-name', rev='1.2.3', classifier='one',),
+          sjar(org='org.foobar.b', name='artifact-name', rev='1.2.3', classifier='two',),
         ],
       )
     ''')
@@ -114,18 +126,18 @@ class GenerateThirdPartyTest(unittest.TestCase):
       'artifactId': 'hello',
       'version': '3.4.5.1',
     }], dependency_string = '''
-      jar_library(name='org.foobar.hello-1.2.3',
-        jars=[
-          sjar(org='org.foobar', name='hello', rev='1.2.3', classifier='one',
-               force=True,),
-          sjar(org='org.foobar', name='hello', rev='1.2.3', classifier='two',
-               force=True,)
+      managed_jar_libraries(name='managed',
+        artifacts=[
+          ':org.foobar.hello',
+          sjar(org='org.foobar', name='hello', rev='3.4.5.1',),
         ],
       )
-      jar_library(name='org.foobar.hello-3.4.5.1',
+
+      jar_library(name='org.foobar.hello',
         jars=[
-          sjar(org='org.foobar', name='hello', rev='3.4.5.1',
-               force=True,)
+          sjar(org='org.foobar', name='hello', rev='1.2.3', classifier='one',),
+          sjar(org='org.foobar', name='hello', rev='1.2.3', classifier='two',),
         ],
+        managed_dependencies=':managed',
       )
     ''')

@@ -18,7 +18,7 @@ from squarepants.plugins.square_idea.tasks.square_idea_project import IdeaProjec
 # depends on, so attempting to import it for unit testing crashes the test runner. This isn't a
 # problem for actually running `./pants idea ...`, because that loads our own internal release of
 # pants which does have the ExportTask class. For now, all we can test is the code in IdeaProject.
-class StagingBuildTest(unittest.TestCase):
+class SquareIdeaTest(unittest.TestCase):
 
   def test_common_prefix(self):
     common_prefix = IdeaProject.common_prefix
@@ -212,3 +212,49 @@ class StagingBuildTest(unittest.TestCase):
         create_module('four', set(), {'default': {'orange.jar'}}),
       ],
     )
+
+  def test_module_pool_no_stealing(self):
+    pool = IdeaProject.ModulePool(generic_modules=('2', '1', '3'),
+                                  specific_modules=('b', 'c', 'a'),
+                                  steal_names=False)
+    self.assertEquals('1', pool.module_for('foobar'))
+    self.assertEquals('1', pool.module_for('foobar'))
+    self.assertEquals('2', pool.module_for('cantaloupe'))
+    self.assertEquals('3', pool.module_for('the-third-number'))
+    self.assertEquals('2', pool.module_for('cantaloupe'))
+    self.assertEquals('no-more-gen-modules', pool.module_for('no-more-gen-modules'))
+    self.assertEquals('no-more-gen-modules', pool.module_for('no-more-gen-modules'))
+    with self.assertRaises(IdeaProject.ModulePool.NoAvailableModules):
+      pool.module_for('this-will-explode', create_if_necessary=False)
+
+  def test_module_pool_stealing(self):
+    pool = IdeaProject.ModulePool(generic_modules=('2', '1', '3'),
+                                  specific_modules=('b', 'c', 'a'),
+                                  steal_names=True)
+    self.assertEquals('1', pool.module_for('foobar'))
+    self.assertEquals('1', pool.module_for('foobar'))
+    self.assertEquals('2', pool.module_for('cantaloupe'))
+    self.assertEquals('3', pool.module_for('the-third-number'))
+    self.assertEquals('2', pool.module_for('cantaloupe'))
+    # The specific modules are stored in an unordered set, so we can't depend on the order.
+    no_more = pool.module_for('no-more-gen-modules')
+    self.assertIn(no_more, 'abc')
+    self.assertEquals(no_more, pool.module_for('no-more-gen-modules'))
+    self.assertIn(pool.module_for('this-will-not-explode'), 'abc')
+    self.assertNotEquals(no_more, pool.module_for('this-will-not-explode'))
+
+  def test_module_pool_preferential(self):
+    pool = IdeaProject.ModulePool(generic_modules=('2', '1', '3'),
+                                  specific_modules=('b', 'c', 'a'),
+                                  steal_names=True)
+    self.assertEquals('1', pool.module_for('foobar'))
+    self.assertEquals('c', pool.module_for('c'))
+    self.assertEquals('2', pool.module_for('the-third-module'))
+    self.assertEquals('3', pool.module_for('the-third-number'))
+    self.assertEquals('a', pool.module_for('a'))
+    self.assertEquals('b', pool.module_for('process-of-elimination'))
+    self.assertEquals('c', pool.module_for('c'))
+    self.assertEquals('had-to-make-a-new-one', pool.module_for('had-to-make-a-new-one'))
+    # 'b' has been stolen, and there are no specific or generic modules left, so this forces a new
+    # generic module to be generated.
+    self.assertEquals('gen-0000', pool.module_for('b'))

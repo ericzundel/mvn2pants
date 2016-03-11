@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import xml.sax
+from xml.etree import ElementTree
 
 from generation_utils import GenerationUtils
 from target_template import Target
@@ -257,7 +258,7 @@ class _DFPomContentHandler(PomContentHandler):
 
 class PomHandlerManager(PomContentHandler):
 
-  def __init__(self):
+  def __init__(self, source_file_name):
     PomContentHandler.__init__(self)
     info_types = [
       WireInfo,
@@ -266,7 +267,9 @@ class PomHandlerManager(PomContentHandler):
       JavaOptionsInfo,
       JavaHomesInfo,
       ShadingInfo,
+      JooqInfo,
     ]
+    self.source_file_name = source_file_name
     self.infos = { info_type: info_type() for info_type in info_types }
     self.handlers = [info.create_content_handler(self) for info in self.infos.values()]
 
@@ -326,7 +329,7 @@ class GenericPomInfo(object):
     key = (source_file_name, rootdir)
     if key in cls.get_cache():
       return cls.get_cache()[key]
-    pom_handler = PomHandlerManager()
+    pom_handler = PomHandlerManager(source_file_name)
     full_source_path = source_file_name
     if rootdir:
       full_source_path = os.path.join(rootdir, full_source_path)
@@ -367,6 +370,7 @@ class WirePomHandler(GenericPomHandler):
   """Finds relevant data for wire generation."""
 
   def __init__(self, parent, info):
+    """:param WireInfo info: info object to populate."""
     super(WirePomHandler, self).__init__(parent)
     self.info = info
     self.plugin_groupId = None
@@ -426,6 +430,7 @@ class SpecialPropertiesInfo(GenericPomInfo):
 class SpecialPropertiesHandler(GenericPomHandler):
 
   def __init__(self, parent, info):
+    """:param SpecialPropertiesInfo info: info object to populate."""
     super(SpecialPropertiesHandler, self).__init__(parent)
     self.info = info
     self._profile_active = False
@@ -475,6 +480,7 @@ class SignedJarInfo(GenericPomInfo):
 class SignedJarHandler(GenericPomHandler):
 
   def __init__(self, parent, info):
+    """:param SignedJarInfo info: info object to populate."""
     super(SignedJarHandler, self).__init__(parent)
     self.info = info
     self._execution_id = None
@@ -515,11 +521,14 @@ class SignedJarHandler(GenericPomHandler):
 
 
 class JavaOptionsInfo(GenericPomInfo):
-  """Holds information for special properties, like those only set for particular OS's."""
+  """Holds information for JVM configuration (like the jvm platform)."""
+
   def __init__(self):
     self.source_level = None
     self.target_level = None
     self.compile_args = []
+    self.test_env_vars = {}
+    self.test_jvm_args = []
 
   def create_content_handler(self, parent):
     return JavaOptionsHandler(parent, self)
@@ -527,7 +536,14 @@ class JavaOptionsInfo(GenericPomInfo):
 
 class JavaOptionsHandler(GenericPomHandler):
 
+  _PLUGIN_PREFIX = ['project', 'build', 'plugins', 'plugin']
+  _COMPILER_PLUGIN = ('org.apache.maven.plugins', 'maven-compiler-plugin')
+  _SUREFIRE_PLUGIN = ('org.apache.maven.plugins', 'maven-surefire-plugin')
+  _TEST_ENV_VARS = _PLUGIN_PREFIX + ['configuration', 'environmentVariables']
+  _TEST_JVM_ARG = _PLUGIN_PREFIX + ['configuration', 'argLine']
+
   def __init__(self, parent, info):
+    """:param JavaOptionsInfo info: info object to populate."""
     super(JavaOptionsHandler, self).__init__(parent)
     self.info = info
     self.pluginGroup = None
@@ -535,7 +551,7 @@ class JavaOptionsHandler(GenericPomHandler):
     self.pluginVersion = None
 
   def endElement(self, name):
-    if not self.pathStartsWith(['project', 'build', 'plugins', 'plugin']):
+    if not self.pathStartsWith(self._PLUGIN_PREFIX):
       return
     if name == 'groupId':
       self.pluginGroup = self.content.strip()
@@ -544,14 +560,18 @@ class JavaOptionsHandler(GenericPomHandler):
     elif name == 'version':
       self.pluginVersion = self.content.strip()
 
-    compiler_plugin = ('org.apache.maven.plugins', 'maven-compiler-plugin')
-    if (self.pluginGroup, self.pluginArtifact) == compiler_plugin:
+    if (self.pluginGroup, self.pluginArtifact) == self._COMPILER_PLUGIN:
       if self.pathEndsWith(['configuration', 'source']):
         self.info.source_level = self.content.strip()
       elif self.pathEndsWith(['configuration', 'target']):
         self.info.target_level = self.content.strip()
       elif self.pathEndsWith(['configuration', 'compilerArgs', 'arg']):
         self.info.compile_args.append(self.content.strip())
+    elif (self.pluginGroup, self.pluginArtifact) == self._SUREFIRE_PLUGIN:
+      if self.pathStartsWith(self._TEST_ENV_VARS) and name != 'environmentVariables':
+        self.info.test_env_vars[name.strip()] = self.content.strip()
+      elif self.path == self._TEST_JVM_ARG:
+        self.info.test_jvm_args.extend(re.split(r'\s+', self.content.strip()))
 
 
 class JavaHomesInfo(GenericPomInfo):
@@ -579,6 +599,7 @@ class JavaHomesHandler(GenericPomHandler):
   java_home_pattern = re.compile(r'^java[0-9]+[.]home$')
 
   def __init__(self, parent, info):
+    """:param JavaHomesInfo info: info object to populate."""
     super(JavaHomesHandler, self).__init__(parent)
     self.info = info
     self.current_os = None
@@ -673,6 +694,7 @@ class ShadingHandler(GenericPomHandler):
       self.rules = []
 
   def __init__(self, parent, info):
+    """:param ShadingInfo info: info object to populate."""
     super(ShadingHandler, self).__init__(parent)
     self.info = info
     self.plugin = self.Plugin()
@@ -712,6 +734,74 @@ class ShadingHandler(GenericPomHandler):
 
     if self.path == self.path_relocate_prefix:
       self.plugin.rules.append((self.plugin.relocate_from, self.plugin.relocate_to))
+
+
+class JooqInfo(GenericPomInfo):
+  """Holds info for jooq generation."""
+
+  def __init__(self):
+    self.config_tree = None
+    self.skip_setup = False
+
+  def create_content_handler(self, parent):
+    return JooqPomHandler(parent, self)
+
+
+class JooqPomHandler(GenericPomHandler):
+  """Finds relevant data for jooq generation."""
+
+  prefix = ['project', 'build', 'pluginManagement', 'plugins', 'plugin']
+  _path_groupId = prefix + ['groupId']
+  _path_artifactId = prefix + ['artifactId']
+  _path_configuration = prefix + ['configuration']
+  _path_configuration_skip = _path_configuration + ['skip']
+  _plugin_id = ('org.jooq', 'jooq-codegen-maven')
+  _sql_plugin_id = ('org.codehaus.mojo', 'sql-maven-plugin')
+
+  def __init__(self, parent, info):
+    """:param JooqInfo info: info object to populate."""
+    super(JooqPomHandler, self).__init__(parent)
+    self.info = info
+    self.plugin_groupId = None
+    self.plugin_artifactId = None
+    self.plugin_configuration = False
+
+  def endElement(self, name):
+    if not self.pathStartsWith(self.prefix):
+      return
+
+    if self.path == self._path_groupId:
+      self.plugin_groupId = self.content.strip()
+    elif self.path == self._path_artifactId:
+      self.plugin_artifactId = self.content.strip()
+    elif self.path == self._path_configuration:
+      self.plugin_configuration = True
+
+    if self.path == self._path_configuration_skip:
+      if (self.plugin_groupId, self.plugin_artifactId) == self._sql_plugin_id:
+        self.info.skip_setup = self.content.strip().lower() == 'true'
+
+    if self.path == self.prefix:
+      if (self.plugin_groupId, self.plugin_artifactId) == self._plugin_id:
+        if self.plugin_configuration:
+          # NB: Jooq is weird, in that we actually want to extract the raw xml as input to the jooq
+          # code generator.
+          tree = ElementTree.parse(self.parent.source_file_name)
+          root_tag_name = tree.getroot().tag
+          if root_tag_name.endswith('project'):
+            xmlns = root_tag_name[:-len('project')]
+            if xmlns:
+              ElementTree.register_namespace('', xmlns[1:-1])
+            xpath = '/'.join('{0}{1}'.format(xmlns, tag) for tag in self.prefix[1:])
+            xpath = './{}'.format(xpath)
+            for subtree in tree.findall(xpath):
+              pid = (subtree.find('./{}groupId'.format(xmlns)).text,
+                     subtree.find('./{}artifactId'.format(xmlns)).text)
+              if pid == self._plugin_id:
+                self.info.config_tree = subtree.find('./{}configuration'.format(xmlns))
+      self.plugin_groupId = None
+      self.plugin_artifactId = None
+      self.plugin_configuration = False
 
 
 class DependencyInfo(object):
@@ -1029,49 +1119,49 @@ class DepsFromPom():
     for dep in deps:
       dep_target = "{groupId}.{artifactId}".format(groupId=dep['groupId'],
                                                    artifactId=dep['artifactId'])
-      if PomUtils.is_third_party_dep(dep_target, rootdir=self._rootdir):
+      if PomUtils.is_local_dep(dep_target):
+        continue
+      is_in_thirdparty = PomUtils.is_third_party_dep(dep_target, rootdir=self._rootdir)
+      if is_in_thirdparty and not dep.get('exclusions'):
         logger.debug("dep_target {target} is not local".format(target=dep_target))
         pants_refs.append("'3rdparty:{target}'".format(target=dep_target))
-
-    # Print the external deps last
-    for dep in deps:
-      dep_target = "{groupId}.{artifactId}".format(groupId=dep['groupId'],
-                                                   artifactId=dep['artifactId'])
-      if PomUtils.is_external_dep(dep_target, rootdir=self._rootdir):
-        if not dep.has_key('version'):
+        continue
+      if not dep.has_key('version'):
+        if is_in_thirdparty:
+          dep['version'] = PomUtils.third_party_dep_targets(rootdir=self._rootdir)[dep_target]
+        else:
           raise Exception(
             "Expected artifact {artifactId} group {groupId} in pom {pom_file} to have a version."
             .format(artifactId=dep['artifactId'],
                     groupId=dep['groupId'],
                     pom_file=self._source_file_name))
-        jar_excludes = []
-        if dep.has_key('exclusions'):
-          for jar_exclude in dep['exclusions']:
-            jar_excludes.append("exclude(org='{groupId}', name='{artifactId}')".format(
-              groupId=jar_exclude['groupId'], artifactId=jar_exclude['artifactId']))
+      jar_excludes = []
+      for jar_exclude in dep.get('exclusions', ()):
+        jar_excludes.append("exclude(org='{groupId}', name='{artifactId}')".format(
+          groupId=jar_exclude['groupId'], artifactId=jar_exclude['artifactId']))
 
-        classifier = dep.get('classifier') # Important to use 'get', so we default to None.
-        if dep.get('type') == 'test-jar':
-          # In our repo, this is special, *or* ivy doesn't translate this correctly.
-          # Transform this into a classifier named 'tests' instead
-          classifier = 'tests'
-          type_ = None
-        else:
-          type_ = dep.get('type')
+      classifier = dep.get('classifier') # Important to use 'get', so we default to None.
+      if dep.get('type') == 'test-jar':
+        # In our repo, this is special, *or* ivy doesn't translate this correctly.
+        # Transform this into a classifier named 'tests' instead
+        classifier = 'tests'
+        type_ = None
+      else:
+        type_ = dep.get('type')
 
-        dep_url = dep.get('systemPath')
-        if dep_url:
-          dep_url = 'file://{}'.format(dep_url)
+      dep_url = dep.get('systemPath')
+      if dep_url:
+        dep_url = 'file://{}'.format(dep_url)
 
-        pants_refs.append(Target.jar.format(
-          org=dep['groupId'],
-          name=dep['artifactId'],
-          rev=dep['version'],
-          classifier=classifier,
-          type_=type_,
-          url=dep_url,
-          excludes=jar_excludes or None,
-        ))
+      pants_refs.append(Target.jar.format(
+        org=dep['groupId'],
+        name=dep['artifactId'],
+        rev=dep['version'],
+        classifier=classifier,
+        type_=type_,
+        url=dep_url,
+        excludes=jar_excludes or None,
+      ))
     return pants_refs
 
   def get_property(self, name):

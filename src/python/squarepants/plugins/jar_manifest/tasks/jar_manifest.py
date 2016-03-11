@@ -3,7 +3,7 @@
 
 import os
 
-from pants.backend.core.tasks.task import Task
+from pants.task.task import Task
 from pants.backend.jvm.targets.jvm_binary import JvmBinary
 from pants.backend.jvm.tasks.classpath_products import ArtifactClasspathEntry
 from pants.util.dirutil import safe_mkdir

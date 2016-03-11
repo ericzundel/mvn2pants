@@ -27,6 +27,11 @@ from pom_file import PomFile
 
 logger = logging.getLogger(__name__)
 
+
+class PomConversionError(Exception):
+  """Error while converting a pom file."""
+
+
 class PomToBuild(object):
 
   def convert_pom(self, pom_file_name, rootdir=None, generation_context=None):
@@ -39,16 +44,28 @@ class PomToBuild(object):
     if generation_context is None:
       generation_context = GenerationContext()
 
-    pom_file = PomFile(pom_file_name, rootdir, generation_context)
+    try:
+      pom_file = PomFile(pom_file_name, rootdir, generation_context)
+    except Exception as e:
+      raise PomConversionError('Failed to initialize PomFile for {}:\n{}'.format(pom_file_name, e))
+
     contents = ''
     for component in BuildComponent.TYPE_LIST:
       bc = component(pom_file, generation_context=generation_context)
       if bc.exists:
-        gen_code = bc.generate()
+        try:
+          gen_code = bc.generate()
+        except Exception as e:
+          raise PomConversionError('Failed to generate component {} for pom file {}.\n{}'
+                                   .format(component.__name__, pom_file_name, e))
         if gen_code:
           contents += gen_code
 
-    generation_context.write_build_file(pom_file.directory, contents)
+    try:
+      generation_context.write_build_file(pom_file.directory, contents)
+    except Exception as e:
+      raise PomConversionError('Failed to write generated build data for {}:\n{}'
+                               .format(pom_file_name, e))
 
 
 def main(poms):

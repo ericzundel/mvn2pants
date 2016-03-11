@@ -6,14 +6,17 @@ from __future__ import (nested_scopes, generators, division, absolute_import, wi
                         print_function, unicode_literals)
 
 from pants.build_graph.build_file_aliases import BuildFileAliases
+from pants.goal.task_registrar import TaskRegistrar as task
 
-from  squarepants.plugins.sjar.exclude_globally import JarDependencyWithGlobalExcludes
+from  squarepants.plugins.sjar.exclude_globally import JarDependencyWithGlobalExcludes, SJarTask
 
 
 def build_file_aliases():
   return BuildFileAliases(
     objects={
-      'sjar_exclude_globally': JarDependencyWithGlobalExcludes.sjar_exclude_globally,
       'sjar': JarDependencyWithGlobalExcludes,
     },
   )
+
+def register_goals():
+  task(name='sjar-dummy', action=SJarTask).install()

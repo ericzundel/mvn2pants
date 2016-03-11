@@ -5,7 +5,6 @@
 
 from pants.backend.jvm.targets.jar_dependency import JarDependency
 from pants.backend.jvm.targets.jar_library import JarLibrary
-from pants.base.exceptions import TargetDefinitionException
 from pants_test.tasks.task_test_base import TaskTestBase
 
 from squarepants.plugins.link_resources_jars.targets.resources_jar import ResourcesJar

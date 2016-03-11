@@ -4,9 +4,9 @@
 
 target(name='plugins',
   dependencies = [
-    'squarepants/src/main/python/squarepants/plugins/compile_prep_command',
     'squarepants/src/main/python/squarepants/plugins/copy_signed_jars',
     'squarepants/src/main/python/squarepants/plugins/jar_manifest',
+    'squarepants/src/main/python/squarepants/plugins/jax_ws',
     'squarepants/src/main/python/squarepants/plugins/link_resources_jars',
     'squarepants/src/main/python/squarepants/plugins/repo',
     'squarepants/src/main/python/squarepants/plugins/ruby',

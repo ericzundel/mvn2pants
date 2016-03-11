@@ -13,7 +13,7 @@ from hashlib import sha1
 from subprocess import Popen, PIPE
 from shutil import rmtree
 
-from pants.backend.core.tasks.task import Task
+from pants.task.task import Task
 from pants.base.exceptions import TaskError
 from pants.base.workunit import WorkUnitLabel
 from pants.util.memo import memoized

@@ -318,11 +318,19 @@ java_library(name='lib',
 java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
-  dependencies = [],
+  dependencies = [
+    ':proto-sources'
+  ],
+  provides = artifact(org='com.example',
+                      name='child1-proto',
+                      repo=square,),  # see squarepants/plugin/repo/register.py
 )
 wire_proto_path(name='path',
   sources=rglobs('*.proto'),
   dependencies=[],
+)
+resources(name='proto-sources',
+  sources = rglobs('*.proto'),
 )
 """
       self.assert_file_contents('child1/src/main/proto/BUILD.gen', triple_quote_string)
@@ -368,7 +376,7 @@ java_library(name='lib',
     'testing-support/src/main/java:lib'
   ],
   provides = artifact(org='com.example',
-                      name='child1',
+                      name='child1-test',
                       repo=square,),  # see squarepants/plugin/repo/register.py
 )
 """
@@ -378,8 +386,12 @@ java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
   dependencies = [
+    ':proto-sources',
     'child1/src/main/proto'
   ],
+  provides = artifact(org='com.example',
+                      name='child1-proto',
+                      repo=square,),  # see squarepants/plugin/repo/register.py
 )
 
 wire_proto_path(name='path',
@@ -387,6 +399,10 @@ wire_proto_path(name='path',
   dependencies=[
     'child1/src/main/proto:path'
   ],
+)
+
+resources(name='proto-sources',
+  sources = rglobs('*.proto'),
 )
 """
       self.assert_file_contents('child1/src/test/proto/BUILD.gen', triple_quote_string)
@@ -456,12 +472,19 @@ java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
   dependencies = [
+    ':proto-sources',
     'child2/src/main/java:lib'
   ],
+  provides = artifact(org='com.example',
+                      name='child1-proto',
+                      repo=square,),  # see squarepants/plugin/repo/register.py
 )
 wire_proto_path(name='path',
   sources=rglobs('*.proto'),
   dependencies=[],
+)
+resources(name='proto-sources',
+  sources = rglobs('*.proto'),
 )
 """
       self.assert_file_contents('child1/src/main/proto/BUILD.gen', triple_quote_string)
@@ -506,7 +529,7 @@ java_library(name='lib',
     'testing-support/src/main/java:lib'
   ],
   provides = artifact(org='com.example',
-                      name='child1',
+                      name='child1-test',
                       repo=square,),  # see squarepants/plugin/repo/register.py
 )
 """
@@ -516,9 +539,13 @@ java_protobuf_library(name='proto',
   sources = rglobs('*.proto'),
   imports = [],
   dependencies = [
+    ':proto-sources',
     'child1/src/main/proto',
     'child2/src/main/java:lib'
   ],
+  provides = artifact(org='com.example',
+                      name='child1-proto',
+                      repo=square,),  # see squarepants/plugin/repo/register.py
 )
 
 wire_proto_path(name='path',
@@ -526,6 +553,10 @@ wire_proto_path(name='path',
   dependencies=[
     'child1/src/main/proto:path'
   ],
+)
+
+resources(name='proto-sources',
+  sources = rglobs('*.proto'),
 )
 """
       self.assert_file_contents('child1/src/test/proto/BUILD.gen', triple_quote_string)

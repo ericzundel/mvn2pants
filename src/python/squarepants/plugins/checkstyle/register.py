@@ -6,11 +6,8 @@ from __future__ import (absolute_import, division, generators, nested_scopes, pr
                         unicode_literals, with_statement)
 
 from pants.backend.jvm.tasks.checkstyle import Checkstyle
-from pants.backend.jvm.tasks.scalastyle import Scalastyle
-from pants.backend.python.tasks.checkstyle.checker import PythonCheckStyleTask
-from pants.backend.python.tasks.python_eval import PythonEval
 from pants.goal.task_registrar import TaskRegistrar as task
 
 
 def register_goals():
-  task(name='checkstyle', action=Checkstyle).install('compile')
+  task(name='checkstyle', action=Checkstyle).install('compile', first=True)
